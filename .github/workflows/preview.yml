@@ -82,4 +82,4 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.ref_name }}
-        run: gh release create "$RELEASE_TAG" dist/* --verify-tag --prerelease --latest=false --title "Agent Picker $RELEASE_TAG" --notes-file CHANGELOG.md
+        run: gh release create "$RELEASE_TAG" dist/* --verify-tag --target preview --prerelease --latest=false --title "Agent Picker $RELEASE_TAG" --notes-file CHANGELOG.md
