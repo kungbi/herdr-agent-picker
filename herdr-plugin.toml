@@ -1,0 +1,40 @@
+id = "agent-picker"
+name = "Agent Picker"
+version = "0.1.0-preview.1"
+min_herdr_version = "0.9.1"
+description = "Compact agent picker with status colors, completion ages and date sections"
+platforms = ["macos", "linux"]
+
+[[actions]]
+id = "open"
+title = "Select agent"
+contexts = ["global"]
+command = ["sh", "run", "open"]
+
+[[panes]]
+id = "picker"
+title = "Agents"
+placement = "popup"
+width = "85%"
+height = "70%"
+command = ["sh", "run", "picker"]
+
+[[events]]
+on = "pane.agent_status_changed"
+command = ["sh", "run", "record"]
+
+[[events]]
+on = "pane.focused"
+command = ["sh", "run", "record"]
+
+[[events]]
+on = "pane.closed"
+command = ["sh", "run", "record"]
+
+[[events]]
+on = "pane.exited"
+command = ["sh", "run", "record"]
+
+[[events]]
+on = "pane.agent_detected"
+command = ["sh", "run", "record"]

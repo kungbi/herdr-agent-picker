@@ -1,0 +1,85 @@
+name: Preview
+
+on:
+  push:
+    branches: [preview]
+    tags: ['v*-preview.*']
+  pull_request:
+    branches: [main, preview]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python: ['3.11', '3.14']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install fzf 0.73.1
+        shell: bash
+        run: |
+          case "$(uname -s):$(uname -m)" in
+            Linux:x86_64) platform=linux_amd64; checksum=f3252c2c366bc1700d3c85781ec8c9695998927ac127870eb049ceea2d540f8a ;;
+            Darwin:arm64) platform=darwin_arm64; checksum=d27fd68c04fb9b42f7c73a3f7d38069a74d308e40174f64a072c747213e97286 ;;
+            Darwin:x86_64) platform=darwin_amd64; checksum=75bbf15248d1cf0a13eafc75b8a55f5075c437e2ba6d76899afc53f4f3e1b38c ;;
+            *) exit 1 ;;
+          esac
+          curl --fail --location --retry 3 "https://github.com/junegunn/fzf/releases/download/v0.73.1/fzf-0.73.1-${platform}.tar.gz" -o "$RUNNER_TEMP/fzf.tar.gz"
+          python -c 'import hashlib,sys; assert hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest() == sys.argv[2]' "$RUNNER_TEMP/fzf.tar.gz" "$checksum"
+          mkdir -p "$RUNNER_TEMP/fzf-bin"
+          tar -xzf "$RUNNER_TEMP/fzf.tar.gz" -C "$RUNNER_TEMP/fzf-bin"
+          echo "$RUNNER_TEMP/fzf-bin" >> "$GITHUB_PATH"
+      - name: Run regression and packaging tests
+        run: sh ./run test
+        env:
+          HERDR_AGENT_PICKER_PYTHON: python
+
+  package:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - name: Build release packages
+        shell: bash
+        env:
+          RELEASE_REF: ${{ github.ref }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          if [[ "$RELEASE_REF" == refs/tags/* ]]; then
+            python scripts/build_package.py --tag "$RELEASE_TAG"
+          else
+            python scripts/build_package.py
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: herdr-agent-picker-preview
+          path: dist/*
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: herdr-agent-picker-preview
+          path: dist
+      - name: Publish prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: gh release create "$RELEASE_TAG" dist/* --verify-tag --prerelease --latest=false --title "Agent Picker $RELEASE_TAG" --notes-file CHANGELOG.md

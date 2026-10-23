@@ -1,0 +1,41 @@
+#!/bin/sh
+set -eu
+
+plugin_root=$(CDPATH= cd "$(dirname "$0")" && pwd)
+mode=${1:-picker}
+
+# Opening an action needs no Python process before Herdr launches the popup.
+if [ "$mode" = open ]; then
+    exec "${HERDR_BIN_PATH:-herdr}" plugin pane open --plugin agent-picker --entrypoint picker
+fi
+
+python_path=${HERDR_AGENT_PICKER_PYTHON:-}
+if [ -z "$python_path" ]; then
+    for candidate in python3.14 python3.13 python3.12 python3.11; do
+        if python_path=$(command -v "$candidate" 2>/dev/null); then
+            break
+        fi
+    done
+fi
+if [ -z "$python_path" ]; then
+    python_path=$(command -v python3 2>/dev/null || true)
+    if [ -z "$python_path" ] || ! "$python_path" -c 'import sys; sys.exit(sys.version_info < (3, 11))'; then
+        printf '%s\n' 'Agent Picker requires Python 3.11 or newer. See README.md.' >&2
+        exit 1
+    fi
+fi
+
+case "$mode" in
+    picker) exec "$python_path" "$plugin_root/agent-picker.py" ;;
+    record) exec "$python_path" "$plugin_root/agent_completion_times.py" ;;
+    check) exec "$python_path" "$plugin_root/check_dependencies.py" ;;
+    package) exec "$python_path" "$plugin_root/scripts/build_package.py" ;;
+    test)
+        "$python_path" "$plugin_root/tests/test_completion_times.py"
+        "$python_path" "$plugin_root/tests/test_date_sections.py"
+        "$python_path" "$plugin_root/tests/test_package.py"
+        "$python_path" "$plugin_root/tests/test_picker.py"
+        exec "$python_path" "$plugin_root/tests/test_live_picker.py"
+        ;;
+    *) printf 'Unknown command: %s\n' "$mode" >&2; exit 2 ;;
+esac
