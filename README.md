@@ -2,6 +2,10 @@
 
 A keyboard-driven agent picker for Herdr, currently available as a preview.
 
+![Herdr Agent Picker with fictional demo tasks](https://raw.githubusercontent.com/kungbi/herdr-agent-picker/preview/docs/images/agent-picker-demo.png)
+
+*Illustrative preview using fictional tasks, projects and paths.*
+
 The default branch is `main`. Preview implementation and development live on
 the [`preview` branch](https://github.com/kungbi/herdr-agent-picker/tree/preview).
 
