@@ -17,6 +17,7 @@ FILES = (
     "scripts/build_package.py", "tests/test_completion_times.py",
     "tests/test_date_sections.py", "tests/test_picker.py", "tests/test_live_picker.py",
     "tests/test_package.py",
+    "docs/images/agent-picker-demo.png", "docs/images/agent-picker-demo.svg",
 )
 
 

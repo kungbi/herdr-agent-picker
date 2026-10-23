@@ -5,6 +5,10 @@ The default branch is `main`.
 
 A compact, keyboard-driven agent popup for Herdr.
 
+![Herdr Agent Picker showing Done, Active and date-grouped history with fictional tasks](docs/images/agent-picker-demo.png)
+
+*Illustrative preview using fictional tasks, projects and paths.*
+
 - Colored status first, bold task title, dim workspace/tab location.
 - `j`/`k` or arrow keys to navigate; Enter to focus; Esc to close.
 - Press `1`–`9` to focus a numbered item immediately, without Enter.
