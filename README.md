@@ -1,6 +1,6 @@
 # Herdr Agent Picker
 
-**Preview · 0.1.0-preview.1** — development and implementation live on `preview`.
+**Preview · 0.1.0-preview.2** — development and implementation live on `preview`.
 The default branch is `main`.
 
 A compact, keyboard-driven agent popup for Herdr.
@@ -15,6 +15,7 @@ A compact, keyboard-driven agent popup for Herdr.
 - Current Done and Active agents come first, followed by idle completion history by date.
 - Completion ages such as `3m ago`; model metadata is hidden.
 - Refreshes the list and status every second while the popup is open.
+- Per-agent reminders with time presets, custom dates and cancellation.
 
 ## Requirements
 
@@ -40,7 +41,7 @@ Install dependencies, then install directly through Herdr:
 herdr plugin install kungbi/herdr-agent-picker --ref preview
 ```
 
-For a fixed version, use `--ref v0.1.0-preview.1`. Run the same command again to
+For a fixed version, use `--ref v0.1.0-preview.2`. Run the same command again to
 update the installed preview. Configure the keybinding below after installing.
 
 Versioned `.tar.gz` and `.zip` packages with `SHA256SUMS` are available from
@@ -75,6 +76,41 @@ Then run `herdr server reload-config`. Use your prefix followed by `g`.
 
 No Python packages or compilation step are required. The same source package
 runs on macOS and Linux with the dependencies listed above.
+
+## Reminders
+
+Select an agent and press `a` to schedule a reminder to revisit it, regardless of
+whether its work has finished. Choose 5, 10, 15 or 30 minutes, 1 or 2 hours,
+tomorrow at 09:00, or **Custom time**. Custom input accepts, for example:
+
+```text
+20m
+1h 30m
+20분 후
+내일 9시
+tomorrow 09:00
+2026-10-24 14:30
+```
+
+Dates and clock times use your computer's local timezone. A clock time on its
+own, such as `09:00`, means its next occurrence. Explicit past dates are rejected.
+Scheduled reminders appear beside their agent as `[alarm MM-DD HH:MM]`.
+
+There is one reminder per agent: setting another replaces it. Press `a` again
+and choose **Cancel current alarm**, or press `r` to list scheduled alarms and
+select one to cancel. Escape leaves a menu without changing the reservation or
+focus; leave the custom input blank to cancel it.
+
+Reminders persist locally and run after the picker closes. At the due time,
+Herdr displays a notification with its completion sound. A desktop notification
+is also requested on macOS and on Linux when `notify-send` is installed. Allow
+notifications in your desktop settings; the OS may suppress them in Focus mode.
+The reminder never sends input to an agent or changes the focused pane.
+
+An overdue reminder is delivered after the computer wakes. After a reboot, open
+the picker to resume saved reminders. Failed deliveries are retried every minute.
+Reminder data stays in `HERDR_PLUGIN_STATE_DIR/reminders.sqlite3` (or the direct
+script state directory below); it is excluded from Git and release archives.
 
 ## Completion times and ordering
 
@@ -122,7 +158,7 @@ sh ./run package
 ```
 
 Tests use fake Herdr responses and real fzf in a pseudo-terminal. They do not
-change focus in your live Herdr session.
+change focus in your live Herdr session or send real notifications.
 
 Packaging creates reproducible `.tar.gz` and `.zip` archives plus `SHA256SUMS`
 in `dist/`, using an explicit file list. Local settings, sockets, completion

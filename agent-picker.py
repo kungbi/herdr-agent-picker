@@ -18,6 +18,7 @@ import tomllib
 from agent_completion_times import (
     cache_path, completion_age, completion_timestamp, display_status, load_times, record_event,
 )
+from agent_reminders import alarm_badges, ensure_worker
 
 
 HERDR = os.environ.get("HERDR_BIN_PATH", "herdr")
@@ -120,6 +121,7 @@ def render_rows():
     rows = []
     number = 0
     times = load_times(cache_path())
+    alarms = alarm_badges()
     now = time.time()
     selected_index = 2
     for heading, items in date_sections(agents, times, now):
@@ -144,11 +146,15 @@ def render_rows():
             title = display_title(agent.get("terminal_title_stripped") or agent.get("title")) or name
             age = completion_age(agent, times, now)
             age_label = f"\033[2m{age}\033[22m " if age else ""
+            alarm_label = ''
+            if agent['pane_id'] in alarms:
+                due = datetime.fromtimestamp(alarms[agent['pane_id']])
+                alarm_label = f" \033[38;2;255;184;108m[alarm {due:%m-%d %H:%M}]\033[39m"
             rows.append(
                 f"{agent['pane_id']}\t{number_label}{status_label(agent['agent_status'])} "
                 f"{age_label}"
                 f"\033[1m{title}\033[22m "
-                f"\033[2m· {location}\033[22m"
+                f"\033[2m· {location}\033[22m{alarm_label}"
             )
     return rows, selected_index
 
@@ -184,6 +190,11 @@ def main():
     if FZF is None:
         raise RuntimeError("fzf is required; see README.md for installation instructions")
     rows, selected_index = render_rows()
+    try:
+        ensure_worker()
+    except (OSError, RuntimeError):
+        # Scheduling errors are shown in the alarm menu; keep agent navigation usable.
+        pass
 
     environment = os.environ.copy()
     for key in ("FZF_DEFAULT_OPTS", "FZF_DEFAULT_OPTS_FILE"):
@@ -204,17 +215,20 @@ def main():
         reload_command = shlex.join([
             sys.executable, str(Path(__file__).resolve()), "--refresh", str(cache),
         ])
+        reminder_command = shlex.join([sys.executable, str(Path(__file__).with_name('agent_reminders.py').resolve())])
         choice = subprocess.run(
             [FZF, "--ansi", "--color=dark,fg+:-1", "--sync", "--no-input", "--no-sort", "--no-multi", "--layout=reverse",
              "--track", "--id-nth=1",
              # Raw mode displays non-matching section headings; match navigation skips them.
              "--raw", "--query=!^──", "--with-shell=/bin/sh -c",
              "--delimiter=\t", "--with-nth=2..", "--border=rounded", "--border-label= Agents ",
-             "--header=1-9: focus  j/k ↑/↓: navigate  Enter: focus  Esc: close",
+             "--header=1-9: focus  j/k ↑/↓: move  Enter: focus  a: alarm  r: alarms  Esc: close",
              f"--bind=j:down-match,k:up-match,down:down-match,up:up-match,ctrl-j:down-match,ctrl-k:up-match,esc:abort,load:pos({selected_index})+unbind(load)",
              "--bind=enter:transform:if [ -n {1} ] && [ {1} != '@section' ]; then printf accept; fi",
              "--bind=double-click:transform:if [ -n {1} ] && [ {1} != '@section' ]; then printf accept; fi",
              f"--bind=every(1):bg-transform:{reload_command}",
+             f"--bind=a:execute:{reminder_command} menu {{1}}",
+             f"--bind=r:execute:{reminder_command} list",
              *number_bindings],
             input=content, text=True, stdout=subprocess.PIPE, env=environment,
         )

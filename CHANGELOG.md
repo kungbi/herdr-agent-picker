@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.0-preview.2
+
+- Press `a` on an agent to set a reminder for 5/10/15/30 minutes, 1/2 hours,
+  tomorrow at 09:00, or a custom relative time or date.
+- Show scheduled times beside agents; reschedule or cancel with `a`, or manage
+  scheduled reminders with `r`.
+- Persist reminders locally and deliver them after the picker closes, with
+  Herdr and desktop notifications, retrying temporary delivery failures.
+- Test relative and absolute times, daylight saving transitions, persistence,
+  cancellation, retries, worker recovery and real fzf reminder dialogs.
+
 ## 0.1.0-preview.1
 
 First packaged preview, developed on the `preview` branch.
