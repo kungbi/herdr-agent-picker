@@ -227,8 +227,9 @@ def main():
              "--bind=enter:transform:if [ -n {1} ] && [ {1} != '@section' ]; then printf accept; fi",
              "--bind=double-click:transform:if [ -n {1} ] && [ {1} != '@section' ]; then printf accept; fi",
              f"--bind=every(1):bg-transform:{reload_command}",
-             f"--bind=a:execute:{reminder_command} menu {{1}}",
-             f"--bind=r:execute:{reminder_command} list",
+             f"--bind=a:execute-silent:{reminder_command} menu {{1}}",
+             f"--bind=r:execute-silent:{reminder_command} list",
+             "--bind=a:+clear-screen,r:+clear-screen",
              *number_bindings],
             input=content, text=True, stdout=subprocess.PIPE, env=environment,
         )

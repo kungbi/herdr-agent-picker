@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import pty
+import re
 import select
 import signal
 import struct
@@ -41,7 +42,7 @@ print(json.dumps({'result': result}))
     socket.touch()
     config = root / 'config.toml'
     config.write_text('')
-    for scenario in ('preset_cancel', 'custom', 'custom_cancel', 'manager'):
+    for scenario in ('preset_cancel', 'custom', 'custom_cancel', 'manager', 'escape', 'custom_escape', 'custom_retry', 'resize', 'empty_manager'):
         state = root / scenario
         store = ReminderStore(state)
         focus = root / f'{scenario}.focus'
@@ -73,16 +74,41 @@ print(json.dumps({'result': result}))
         try:
             wait_for(lambda: b'Fictional demo task' in output)
             output.clear()
+            if scenario == 'empty_manager':
+                os.write(fd, b'r')
+                wait_for(lambda: b'No scheduled alarms.' in output)
+                os.write(fd, b'\x1b')
+                time.sleep(0.15)
+                output.clear()
             os.write(fd, b'a')
             wait_for(lambda: b'Custom time' in output)
             assert b'Tomorrow 09:00' in output
+            assert b'\x1b[2J' not in output and b'\x1b[?1049' not in output, 'Dialog cleared the background'
+            positions = re.findall(rb'\x1b\[(\d+);(\d+)H', output)
+            assert positions and all(3 < int(row) < 24 and int(column) == 33 for row, column in positions), positions
+            if scenario == 'resize':
+                output.clear()
+                fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack('HHHH', 20, 100, 0, 0))
+                wait_for(lambda: b'\x1b[4;18H' in output)
+                os.write(fd, b'\x1b[B\x1b[A')
+            if scenario == 'escape':
+                os.write(fd, b'\x1b')
+                time.sleep(0.15)
+                assert not store.pending()
+                os.write(fd, b'\r')
             started = time.time()
-            if scenario.startswith('custom'):
+            if scenario == 'escape':
+                pass
+            elif scenario.startswith('custom'):
                 output.clear()
                 os.write(fd, b'8')
                 wait_for(lambda: b'When (blank to cancel)' in output)
-                os.write(fd, b'\n' if scenario == 'custom_cancel' else '20분 후\n'.encode())
-                if scenario == 'custom_cancel':
+                if scenario == 'custom_retry':
+                    output.clear()
+                    os.write(fd, b'not-a-time\r')
+                    wait_for(lambda: b'Use 20m' in output)
+                os.write(fd, b'\x1b' if scenario == 'custom_escape' else b'\n' if scenario == 'custom_cancel' else '20분 후\n'.encode())
+                if scenario in ('custom_cancel', 'custom_escape'):
                     time.sleep(0.15)
                     assert not store.pending()
                     os.write(fd, b'\x1b')
@@ -114,7 +140,7 @@ print(json.dumps({'result': result}))
                     break
                 drain()
             assert exited
-            assert focus.exists() == (scenario != 'custom_cancel')
+            assert focus.exists() == (scenario not in ('custom_cancel', 'custom_escape'))
             if focus.exists():
                 assert focus.read_text() == 'demo:p1'
             print(f'PASS: alarm {scenario}; real fzf, fictional agents', flush=True)

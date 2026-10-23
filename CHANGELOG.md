@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.0-preview.3
+
+- Open reminder presets, custom time input and scheduled alarms in small centered
+  dialogs over the agent list, preserving the selected agent on return.
+- Keep errors and cancellation inside the dialog and support terminal resizing.
+
 ## 0.1.0-preview.2
 
 - Press `a` on an agent to set a reminder for 5/10/15/30 minutes, 1/2 hours,

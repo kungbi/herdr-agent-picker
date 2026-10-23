@@ -13,7 +13,7 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[1]
 FILES = (
     "LICENSE", "README.md", "CHANGELOG.md", "herdr-plugin.toml", "run",
-    "agent-picker.py", "agent_completion_times.py", "agent_reminders.py", "check_dependencies.py",
+    "agent-picker.py", "agent_completion_times.py", "agent_reminders.py", "reminder_dialog.py", "check_dependencies.py",
     "scripts/build_package.py", "tests/test_completion_times.py",
     "tests/test_date_sections.py", "tests/test_picker.py", "tests/test_live_picker.py",
     "tests/test_package.py",

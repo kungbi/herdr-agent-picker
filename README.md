@@ -1,6 +1,6 @@
 # Herdr Agent Picker
 
-**Preview · 0.1.0-preview.2** — development and implementation live on `preview`.
+**Preview · 0.1.0-preview.3** — development and implementation live on `preview`.
 The default branch is `main`.
 
 A compact, keyboard-driven agent popup for Herdr.
@@ -41,7 +41,7 @@ Install dependencies, then install directly through Herdr:
 herdr plugin install kungbi/herdr-agent-picker --ref preview
 ```
 
-For a fixed version, use `--ref v0.1.0-preview.2`. Run the same command again to
+For a fixed version, use `--ref v0.1.0-preview.3`. Run the same command again to
 update the installed preview. Configure the keybinding below after installing.
 
 Versioned `.tar.gz` and `.zip` packages with `SHA256SUMS` are available from
@@ -80,7 +80,9 @@ runs on macOS and Linux with the dependencies listed above.
 ## Reminders
 
 Select an agent and press `a` to schedule a reminder to revisit it, regardless of
-whether its work has finished. Choose 5, 10, 15 or 30 minutes, 1 or 2 hours,
+whether its work has finished. A small centered dialog opens over the agent list;
+Esc returns to the same selection. Custom input and the `r` reminder manager also
+use compact dialogs. Choose 5, 10, 15 or 30 minutes, 1 or 2 hours,
 tomorrow at 09:00, or **Custom time**. Custom input accepts, for example:
 
 ```text

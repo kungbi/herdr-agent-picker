@@ -16,6 +16,8 @@ import sys
 import time
 import uuid
 
+from reminder_dialog import Dialog
+
 PRESETS = (
     ('5 minutes', '5m'), ('10 minutes', '10m'), ('15 minutes', '15m'),
     ('30 minutes', '30m'), ('1 hour', '1h'), ('2 hours', '2h'),
@@ -227,22 +229,8 @@ def worker(root):
 
 
 def choose(rows, header, title='Alarm'):
-    fzf = shutil.which('fzf')
-    if fzf is None:
-        raise RuntimeError('fzf is required')
-    environment = os.environ.copy()
-    for key in ('FZF_DEFAULT_OPTS', 'FZF_DEFAULT_OPTS_FILE'):
-        environment.pop(key, None)
-    bindings = [f'--bind={index}:pos({index})+accept' for index in range(1, min(len(rows), 9) + 1)]
-    result = subprocess.run([fzf, '--no-input', '--no-sort', '--layout=reverse', '--border=rounded',
-                             f'--border-label= {title} ', f'--header={header}', '--delimiter=\t', '--with-nth=2..',
-                             '--bind=j:down,k:up,down:down,up:up,esc:abort', *bindings],
-                            input='\n'.join(rows) + '\n', text=True, stdout=subprocess.PIPE, env=environment)
-    if result.returncode in (1, 130):
-        return None
-    if result.returncode:
-        raise RuntimeError(f'Alarm menu exited with status {result.returncode}')
-    return result.stdout.partition('\t')[0]
+    with Dialog() as dialog:
+        return dialog.choose(rows, header, title)
 
 
 def menu(pane_id):
@@ -268,16 +256,17 @@ def menu(pane_id):
         return
     expression = PRESETS[int(selected)-1][1]
     if expression is None:
-        print('Examples: 20m, 1h 30m, 20분 후, 내일 9시, tomorrow 09:00, YYYY-MM-DD HH:MM')
-        while True:
-            try:
-                expression = input('When (blank to cancel): ').strip()
+        with Dialog() as dialog:
+            error_message = ''
+            while True:
+                expression = dialog.prompt(error_message)
                 if not expression:
                     return
-                due = parse_time(expression)
-                break
-            except ValueError as error:
-                print(error)
+                try:
+                    due = parse_time(expression)
+                    break
+                except ValueError as error:
+                    error_message = str(error)
     else:
         due = parse_time(expression)
     store.schedule(pane_id, title, due, context)
@@ -288,8 +277,8 @@ def manage():
     store = ReminderStore()
     items = store.pending()
     if not items:
-        print('No scheduled alarms.')
-        input('Press Enter to return')
+        with Dialog() as dialog:
+            dialog.message('No scheduled alarms.')
         return
     rows = [f"{item['id']}\t{'[' + str(index) + ']' if index <= 9 else '   '} "
             f"{datetime.fromtimestamp(item['due']):%Y-%m-%d %H:%M}  {item['title']}"
@@ -311,7 +300,9 @@ if __name__ == '__main__':
     except (KeyboardInterrupt, EOFError):
         pass
     except (OSError, ValueError, KeyError, RuntimeError, sqlite3.Error, subprocess.SubprocessError) as error:
-        print(f'Alarm: {error}', file=sys.stderr)
-        if sys.stdin.isatty():
-            input('Press Enter to return')
+        if sys.argv[1] in ('menu', 'list'):
+            with Dialog() as dialog:
+                dialog.message(str(error))
+        else:
+            print(f'Alarm: {error}', file=sys.stderr)
         sys.exit(1)
