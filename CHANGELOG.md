@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.0-preview.4
+
+- Match the picker’s dark selection and border colors in reminder dialogs.
+- Keep j/k, arrows and custom typing responsive after fzf pauses its terminal
+  input, including when a dialog has been open for more than a second.
+- Verify visible selection changes before Enter, plus delayed custom input.
+
 ## 0.1.0-preview.3
 
 - Open reminder presets, custom time input and scheduled alarms in small centered

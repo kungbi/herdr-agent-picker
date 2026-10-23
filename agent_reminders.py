@@ -248,7 +248,7 @@ def menu(pane_id):
     rows = [f'{index}\t[{index}] {label}' for index, (label, _) in enumerate(PRESETS, 1)]
     if current:
         rows.append('9\t[9] Cancel current alarm')
-    selected = choose(rows, title + '\n1-9 / Enter: set alarm  Esc: back')
+    selected = choose(rows, title + '\nj/k ↑/↓: move  1-9 / Enter: set  Esc: back')
     if selected is None:
         return
     if selected == '9' and current:
@@ -284,7 +284,7 @@ def manage():
             f"{datetime.fromtimestamp(item['due']):%Y-%m-%d %H:%M}  {item['title']}"
             + (' (delivery failed; retrying)' if item['error'] else '')
             for index, item in enumerate(items, 1)]
-    selected = choose(rows, 'Select an alarm to cancel  Esc: back', 'Scheduled alarms')
+    selected = choose(rows, 'j/k ↑/↓: move  Enter: cancel  Esc: back', 'Scheduled alarms')
     if selected is not None:
         store.cancel(selected)
 

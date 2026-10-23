@@ -8,6 +8,12 @@ import tty
 import unicodedata
 
 
+# Match fzf's dark palette, with terminal foreground/background for normal rows.
+TEXT = '\x1b[0;39;49m'
+BORDER = '\x1b[0;38;5;59;49m'
+SELECTED = '\x1b[0;39;48;5;236m'
+
+
 def fitted(text, width):
     result, used = '', 0
     for character in str(text):
@@ -25,7 +31,8 @@ class Dialog:
     def __enter__(self):
         self.fd = os.open('/dev/tty', os.O_RDWR)
         self.attributes = termios.tcgetattr(self.fd)
-        tty.setraw(self.fd)
+        tty.setraw(self.fd, termios.TCSANOW)
+        os.set_blocking(self.fd, False)
         self.decoder = codecs.getincrementaldecoder('utf-8')('replace')
         self.write('\x1b[?25l')
         return self
@@ -36,18 +43,37 @@ class Dialog:
         os.close(self.fd)
 
     def write(self, text):
-        os.write(self.fd, text.encode())
+        remaining = memoryview(text.encode())
+        while remaining:
+            try:
+                remaining = remaining[os.write(self.fd, remaining):]
+            except BlockingIOError:
+                select.select([], [self.fd], [], 0.1)
 
     def key(self):
+        # fzf execute-silent restores cooked input after one second. Keep this
+        # dialog in raw mode so navigation never starts waiting for Enter.
+        if termios.tcgetattr(self.fd)[3] & (termios.ICANON | termios.ECHO | termios.ISIG):
+            tty.setraw(self.fd, termios.TCSANOW)
         if not select.select([self.fd], [], [], 0.1)[0]:
             return None  # Polling also lets a resize redraw the dialog.
-        value = os.read(self.fd, 1)
+        try:
+            value = os.read(self.fd, 1)
+        except BlockingIOError:
+            # A mode change between select and read must not block the UI.
+            return None
         if not value:
             return 'escape'
         if value == b'\x1b':
             sequence = b''
             while select.select([self.fd], [], [], 0.04)[0]:
-                sequence += os.read(self.fd, 1)
+                try:
+                    chunk = os.read(self.fd, 1)
+                except BlockingIOError:
+                    break
+                if not chunk:
+                    return 'escape'
+                sequence += chunk
                 if len(sequence) >= 2 and 0x40 <= sequence[-1] <= 0x7e:
                     break
             if not sequence:
@@ -74,10 +100,14 @@ class Dialog:
         content = (lines + [''] * height)[:height - 2]
         panel += ['│' + fitted(line, inner) + '│' for line in content]
         panel += ['╰' + '─' * inner + '╯']
-        output = ['\x1b[0m\x1b[?25l']
+        output = [TEXT + '\x1b[?25l']
         for index, line in enumerate(panel):
-            color = '\x1b[7m' if index - 1 == selected else '\x1b[0m'
-            output.append(f'\x1b[{top + index};{left}H{color}{line}\x1b[0m')
+            if index in (0, len(panel) - 1):
+                styled = BORDER + line
+            else:
+                color = SELECTED if index - 1 == selected else TEXT
+                styled = BORDER + line[0] + color + line[1:-1] + BORDER + line[-1]
+            output.append(f'\x1b[{top + index};{left}H{styled}\x1b[0m')
         self.write(''.join(output))
 
     def choose(self, rows, header, title='Alarm'):
@@ -89,7 +119,10 @@ class Dialog:
             capacity = max(1, min(9, terminal_rows - len(headings) - 7))
             start = max(0, selected - capacity + 1)
             visible = labels[start:start + capacity]
-            self.draw(title, headings + [''] + [' ' + label for label in visible],
+            self.draw(title, headings + [''] + [
+                ('> ' if start + index == selected else '  ') + label
+                for index, label in enumerate(visible)
+            ],
                       len(headings) + 1 + selected - start)
             key = self.key()
             if key == 'escape':

@@ -42,7 +42,7 @@ print(json.dumps({'result': result}))
     socket.touch()
     config = root / 'config.toml'
     config.write_text('')
-    for scenario in ('preset_cancel', 'custom', 'custom_cancel', 'manager', 'escape', 'custom_escape', 'custom_retry', 'resize', 'empty_manager'):
+    for scenario in ('preset_cancel', 'custom', 'custom_cancel', 'manager', 'escape', 'custom_escape', 'custom_retry', 'resize', 'empty_manager', 'jk', 'delayed_jk', 'delayed_arrows', 'delayed_custom'):
         state = root / scenario
         store = ReminderStore(state)
         focus = root / f'{scenario}.focus'
@@ -69,7 +69,7 @@ print(json.dumps({'result': result}))
             deadline = time.monotonic() + 8
             while not predicate() and time.monotonic() < deadline:
                 drain()
-            assert predicate(), output.decode(errors='replace')
+            assert predicate(), output.decode(errors='replace')[-8000:]
 
         try:
             wait_for(lambda: b'Fictional demo task' in output)
@@ -83,6 +83,8 @@ print(json.dumps({'result': result}))
             os.write(fd, b'a')
             wait_for(lambda: b'Custom time' in output)
             assert b'Tomorrow 09:00' in output
+            assert b'\x1b[7m' not in output, 'White reverse-video highlight returned'
+            assert b'\x1b[0;39;48;5;236m' in output
             assert b'\x1b[2J' not in output and b'\x1b[?1049' not in output, 'Dialog cleared the background'
             positions = re.findall(rb'\x1b\[(\d+);(\d+)H', output)
             assert positions and all(3 < int(row) < 24 and int(column) == 33 for row, column in positions), positions
@@ -99,7 +101,7 @@ print(json.dumps({'result': result}))
             started = time.time()
             if scenario == 'escape':
                 pass
-            elif scenario.startswith('custom'):
+            elif scenario.startswith('custom') or scenario == 'delayed_custom':
                 output.clear()
                 os.write(fd, b'8')
                 wait_for(lambda: b'When (blank to cancel)' in output)
@@ -107,7 +109,14 @@ print(json.dumps({'result': result}))
                     output.clear()
                     os.write(fd, b'not-a-time\r')
                     wait_for(lambda: b'Use 20m' in output)
-                os.write(fd, b'\x1b' if scenario == 'custom_escape' else b'\n' if scenario == 'custom_cancel' else '20분 후\n'.encode())
+                if scenario == 'delayed_custom':
+                    time.sleep(1.4)
+                    output.clear()
+                    os.write(fd, '20분 후'.encode())
+                    wait_for(lambda: '> 20분 후'.encode() in output)
+                    os.write(fd, b'\r')
+                else:
+                    os.write(fd, b'\x1b' if scenario == 'custom_escape' else b'\n' if scenario == 'custom_cancel' else '20분 후\n'.encode())
                 if scenario in ('custom_cancel', 'custom_escape'):
                     time.sleep(0.15)
                     assert not store.pending()
@@ -118,9 +127,22 @@ print(json.dumps({'result': result}))
                     wait_for(lambda: b'[alarm ' in output)
                     os.write(fd, b'\r')
             else:
-                os.write(fd, b'1')
+                if scenario in ('jk', 'delayed_jk', 'delayed_arrows'):
+                    # Move twice down and once up: Enter must choose ten minutes.
+                    if scenario.startswith('delayed'):
+                        time.sleep(1.4)
+                    keys = (b'\x1b[B', b'\x1b[B', b'\x1b[A') if scenario == 'delayed_arrows' else (b'j', b'j', b'k')
+                    for key, label in zip(keys, (b'[2] 10 minutes', b'[3] 15 minutes', b'[2] 10 minutes')):
+                        output.clear()
+                        os.write(fd, key)
+                        wait_for(lambda: any(label in chunk.split(b'\x1b[0m')[0]
+                                             for chunk in output.split(b'\x1b[0;39;48;5;236m')[1:]))
+                    os.write(fd, b'\r')
+                else:
+                    os.write(fd, b'1')
                 wait_for(lambda: bool(store.pending()))
-                assert started + 295 < store.pending()[0]['due'] < time.time() + 305
+                duration = 600 if scenario in ('jk', 'delayed_jk', 'delayed_arrows') else 300
+                assert started + duration - 5 < store.pending()[0]['due'] < time.time() + duration + 5, store.pending()[0]
                 wait_for(lambda: b'[alarm ' in output)
                 assert not focus.exists(), 'Setting an alarm focused the agent'
                 output.clear()
@@ -136,7 +158,7 @@ print(json.dumps({'result': result}))
                 done, status = os.waitpid(pid, os.WNOHANG)
                 if done:
                     exited = True
-                    assert os.waitstatus_to_exitcode(status) == 0, output.decode(errors='replace')
+                    assert os.waitstatus_to_exitcode(status) == 0, output.decode(errors='replace')[-8000:]
                     break
                 drain()
             assert exited
@@ -147,7 +169,10 @@ print(json.dumps({'result': result}))
         finally:
             for item in store.pending():
                 store.cancel(item['id'])
-            if not exited:
-                os.kill(pid, signal.SIGKILL)
-                os.waitpid(pid, 0)
             os.close(fd)
+            if not exited:
+                try:
+                    os.killpg(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                os.waitpid(pid, 0)
