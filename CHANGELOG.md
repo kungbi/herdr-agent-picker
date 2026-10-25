@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.0-preview.6
+
+- Change Ctrl+D / Ctrl+U to move five agents at a time, regardless of window size.
+  Skip section headings and stop at the first or last agent.
+
 ## 0.1.0-preview.5
 
 - Replace free-form custom time input with separate numeric date and time fields.

@@ -208,16 +208,11 @@ def main():
             f'--bind={number}:transform:if [ "$FZF_MATCH_COUNT" -ge {number} ]; '
             f"then printf '%s' '{actions}'; fi"
         )
-    page_bindings = []
-    for key, direction in (("ctrl-d", "down"), ("ctrl-u", "up")):
-        # Move by matching agents so section headings can never take focus.
-        action = f"{direction}-match"
-        page_bindings.append(
-            f"--bind={key}:transform:count=$(( (${{FZF_LINES:-4}} - 2) / 2 )); "
-            f"actions={action}; while [ \"$count\" -gt 1 ]; do "
-            f'actions="$actions+{action}"; count=$((count - 1)); done; '
-            'printf "%s" "$actions"'
-        )
+    # Count agents rather than section headings, independently of window size.
+    jump_bindings = [
+        f"--bind={key}:" + "+".join([f"{direction}-match"] * 5)
+        for key, direction in (("ctrl-d", "down"), ("ctrl-u", "up"))
+    ]
     with tempfile.TemporaryDirectory(prefix="herdr-agent-picker-") as directory:
         cache = Path(directory) / "rows"
         content = "\n".join(rows) + "\n"
@@ -232,7 +227,7 @@ def main():
              # Raw mode displays non-matching section headings; match navigation skips them.
              "--raw", "--query=!^──", "--with-shell=/bin/sh -c",
              "--delimiter=\t", "--with-nth=2..", "--border=rounded", "--border-label= Agents ",
-             "--header=1-9/Enter: focus  j/k ↑↓: move  Ctrl+D/U: half page  a: alarm  r: alarms  Esc: close",
+             "--header=1-9/Enter: focus  j/k ↑↓: move  Ctrl+D/U: 5 agents  a: alarm  r: alarms  Esc: close",
              f"--bind=j:down-match,k:up-match,down:down-match,up:up-match,ctrl-j:down-match,ctrl-k:up-match,esc:abort,load:pos({selected_index})+unbind(load)",
              "--bind=enter:transform:if [ -n {1} ] && [ {1} != '@section' ]; then printf accept; fi",
              "--bind=double-click:transform:if [ -n {1} ] && [ {1} != '@section' ]; then printf accept; fi",
@@ -240,7 +235,7 @@ def main():
              f"--bind=a:execute-silent:{reminder_command} menu {{1}}",
              f"--bind=r:execute-silent:{reminder_command} list",
              "--bind=a:+clear-screen,r:+clear-screen",
-             *number_bindings, *page_bindings],
+             *number_bindings, *jump_bindings],
             input=content, text=True, stdout=subprocess.PIPE, env=environment,
         )
     if choice.returncode in (1, 130):

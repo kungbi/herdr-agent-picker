@@ -1,6 +1,6 @@
 # Herdr Agent Picker
 
-**Preview · 0.1.0-preview.5** — development and implementation live on `preview`.
+**Preview · 0.1.0-preview.6** — development and implementation live on `preview`.
 The default branch is `main`.
 
 A compact, keyboard-driven agent popup for Herdr.
@@ -10,7 +10,7 @@ A compact, keyboard-driven agent popup for Herdr.
 *Illustrative preview using fictional tasks, projects and paths.*
 
 - Colored status first, bold task title, dim workspace/tab location.
-- `j`/`k` or arrow keys to navigate; `Ctrl+D`/`Ctrl+U` to move half a page.
+- `j`/`k` or arrow keys to navigate; `Ctrl+D`/`Ctrl+U` to move five agents at a time.
   Enter to focus; Esc to close.
 - Press `1`–`9` to focus a numbered item immediately, without Enter.
 - Current Done and Active agents come first, followed by idle completion history by date.
@@ -42,7 +42,7 @@ Install dependencies, then install directly through Herdr:
 herdr plugin install kungbi/herdr-agent-picker --ref preview
 ```
 
-For a fixed version, use `--ref v0.1.0-preview.5`. Run the same command again to
+For a fixed version, use `--ref v0.1.0-preview.6`. Run the same command again to
 update the installed preview. Configure the keybinding below after installing.
 
 Versioned `.tar.gz` and `.zip` packages with `SHA256SUMS` are available from

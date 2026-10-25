@@ -72,11 +72,13 @@ print(json.dumps({'result': result}))
         ('number_zero_ignored', 12, [b'0', b'9'], 'w1:p10'),
         ('navigate_tenth', 12, [b'jjjjjjj', b'\r'], 'w1:p11'),
         ('navigate_last', 12, [b'jjjjjjjjj', b'\r'], 'w1:p5'),
-        ('half_down', 40, [b'\x04', b'\r'], 'w1:p14'),
-        ('half_up', 40, [b'\x04\x15', b'\r'], 'w1:p1'),
-        ('half_up_top', 40, [b'\x15', b'\r'], 'w1:p3'),
-        ('half_down_end', 40, [b'\x04' * 8, b'\r'], 'w1:p5'),
-        ('half_up_end', 40, [b'\x04' * 8 + b'\x15', b'\r'], 'w1:p31'),
+        ('jump_down', 40, [b'\x04', b'\r'], 'w1:p9'),
+        ('jump_up', 40, [b'\x04\x15', b'\r'], 'w1:p1'),
+        ('jump_small_down', 5, [b'\x04', b'\r'], 'w1:p5'),
+        ('jump_small_up', 5, [b'\x15', b'\r'], 'w1:p3'),
+        ('jump_up_top', 40, [b'\x15', b'\r'], 'w1:p3'),
+        ('jump_down_end', 40, [b'\x04' * 8, b'\r'], 'w1:p5'),
+        ('jump_up_end', 40, [b'\x04' * 8 + b'\x15', b'\r'], 'w1:p36'),
     ]
     for scenario, count, key_steps, expected in scenarios:
         focus_log = root / f'{scenario}.focus'
