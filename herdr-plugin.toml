@@ -1,6 +1,6 @@
 id = "agent-picker"
 name = "Agent Picker"
-version = "0.1.0-preview.4"
+version = "0.1.0-preview.5"
 min_herdr_version = "0.9.1"
 description = "Compact agent picker with status colors, completion ages and date sections"
 platforms = ["macos", "linux"]

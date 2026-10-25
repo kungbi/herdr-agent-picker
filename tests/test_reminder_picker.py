@@ -1,5 +1,6 @@
 """Exercise reminder dialogs inside the real picker without live notifications."""
 
+from datetime import datetime, timedelta
 import errno
 import fcntl
 import json
@@ -104,26 +105,32 @@ print(json.dumps({'result': result}))
             elif scenario.startswith('custom') or scenario == 'delayed_custom':
                 output.clear()
                 os.write(fd, b'8')
-                wait_for(lambda: b'When (blank to cancel)' in output)
+                wait_for(lambda: b'Date and time (local)' in output)
+                assert b'Date:' in output and b'Time:' in output
+                target = (datetime.now() + timedelta(days=2)).replace(hour=9, minute=25, second=0, microsecond=0)
                 if scenario == 'custom_retry':
                     output.clear()
-                    os.write(fd, b'not-a-time\r')
-                    wait_for(lambda: b'Use 20m' in output)
-                if scenario == 'delayed_custom':
-                    time.sleep(1.4)
-                    output.clear()
-                    os.write(fd, '20분 후'.encode())
-                    wait_for(lambda: '> 20분 후'.encode() in output)
-                    os.write(fd, b'\r')
-                else:
-                    os.write(fd, b'\x1b' if scenario == 'custom_escape' else b'\n' if scenario == 'custom_cancel' else '20분 후\n'.encode())
+                    os.write(fd, b'\x1b[H2000\r')
+                    wait_for(lambda: b'Choose a future date and time' in output)
                 if scenario in ('custom_cancel', 'custom_escape'):
-                    time.sleep(0.15)
+                    if scenario == 'custom_escape':
+                        os.write(fd, b'12')
+                    output.clear()
+                    os.write(fd, b'\x1b')
+                    wait_for(lambda: b'Ctrl+D/U' in output)
                     assert not store.pending()
                     os.write(fd, b'\x1b')
                 else:
+                    if scenario == 'delayed_custom':
+                        time.sleep(1.4)
+                    output.clear()
+                    os.write(fd, b'\x1b[H' + target.strftime('%Y').encode())
+                    wait_for(lambda: f'[{target.year}]'.encode() in output)
+                    os.write(fd, target.strftime('\t%m\t%d\t%H\t%M').encode())
+                    wait_for(lambda: b'[25]' in output)
+                    os.write(fd, b'\r')
                     wait_for(lambda: bool(store.pending()))
-                    assert started + 1195 < store.pending()[0]['due'] < time.time() + 1205
+                    assert store.pending()[0]['due'] == target.timestamp()
                     wait_for(lambda: b'[alarm ' in output)
                     os.write(fd, b'\r')
             else:

@@ -257,16 +257,9 @@ def menu(pane_id):
     expression = PRESETS[int(selected)-1][1]
     if expression is None:
         with Dialog() as dialog:
-            error_message = ''
-            while True:
-                expression = dialog.prompt(error_message)
-                if not expression:
-                    return
-                try:
-                    due = parse_time(expression)
-                    break
-                except ValueError as error:
-                    error_message = str(error)
+            due = dialog.date_time(current['due'] if current else None)
+        if due is None:
+            return
     else:
         due = parse_time(expression)
     store.schedule(pane_id, title, due, context)

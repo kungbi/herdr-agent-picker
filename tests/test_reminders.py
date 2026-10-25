@@ -13,6 +13,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from agent_reminders import ReminderStore, notify, parse_time, process_due
+from reminder_dialog import DateTimeForm
 
 now = datetime(2026, 10, 23, 14, 30).timestamp()
 for text, seconds in [('5m', 300), ('10 minutes', 600), ('15분', 900), ('30분 후', 1800),
@@ -31,12 +32,55 @@ for text in ['', '0m', '-5m', '5m junk', '오늘 9시', '25:00', 'tomorrow 09:99
     else:
         raise AssertionError(f'Invalid time accepted: {text}')
 
+# Separate date/time fields preserve calendar boundaries and reject invalid saves.
+form = DateTimeForm(datetime(2028, 1, 31, 23, 59).timestamp())
+assert form.values == [2028, 1, 31, 23, 59]
+form.index = 1
+form.adjust(1)
+assert form.values[:3] == [2028, 2, 29]
+form.index = 0
+form.adjust(1)
+assert form.values[:3] == [2029, 2, 28]
+form.index = 4
+form.adjust(1)
+assert form.values == [2029, 3, 1, 0, 0]
+form.index = 3
+form.digit('2')
+form.digit('5')
+try:
+    form.move(1)
+except ValueError:
+    pass
+else:
+    raise AssertionError('Hour 25 was accepted')
+form.backspace()
+form.digit('3')
+form.move(1)
+assert form.values[3] == 23
+assert form.due(now) == datetime(2029, 3, 1, 23).timestamp()
+for values in ([2026, 2, 30, 9, 0], [2026, 10, 23, 9, 0]):
+    form.values = values
+    try:
+        form.due(now)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError(f'Invalid calendar date or past time accepted: {values}')
+
 previous_tz = os.environ.get('TZ')
 try:
     os.environ['TZ'] = 'America/New_York'
     time.tzset()
     before_dst = datetime(2026, 3, 7, 12).timestamp()
     assert parse_time('tomorrow 09:00', before_dst) - before_dst == 20 * 3600
+    form = DateTimeForm(before_dst)
+    form.values = [2026, 3, 8, 2, 30]
+    try:
+        form.due(before_dst)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError('Nonexistent local daylight-saving time was accepted')
 finally:
     if previous_tz is None:
         os.environ.pop('TZ', None)

@@ -1,10 +1,13 @@
 """Small terminal dialogs drawn over the paused picker without clearing it."""
 
 import codecs
+import calendar
+from datetime import datetime, timedelta
 import os
 import select
 import termios
 import tty
+import time
 import unicodedata
 
 
@@ -12,6 +15,68 @@ import unicodedata
 TEXT = '\x1b[0;39;49m'
 BORDER = '\x1b[0;38;5;59;49m'
 SELECTED = '\x1b[0;39;48;5;236m'
+
+
+class DateTimeForm:
+    """Numeric date/time fields; incomplete edits stay visible until committed."""
+
+    def __init__(self, initial=None):
+        value = datetime.fromtimestamp(initial) if initial is not None else datetime.now() + timedelta(minutes=30)
+        self.values = [value.year, value.month, value.day, value.hour, value.minute]
+        self.index, self.draft = 2, None
+
+    def commit(self):
+        if self.draft:
+            value = int(self.draft)
+            low, high = ((1, 9999), (1, 12), (1, 31), (0, 23), (0, 59))[self.index]
+            if not low <= value <= high:
+                name = ('Year', 'Month', 'Day', 'Hour', 'Minute')[self.index]
+                raise ValueError(f'{name}: use {low}-{high}.')
+            self.values[self.index] = value
+        self.draft = None
+
+    def move(self, step):
+        self.commit()
+        self.index = (self.index + step) % 5
+
+    def digit(self, value):
+        width = 4 if self.index == 0 else 2
+        self.draft = (self.draft or '') + value if len(self.draft or '') < width else value
+
+    def backspace(self):
+        self.draft = (str(self.values[self.index]) if self.draft is None else self.draft)[:-1]
+
+    def parts(self):
+        parts = [f'{self.values[0]:04d}', *(f'{value:02d}' for value in self.values[1:])]
+        parts[self.index] = f'[{self.draft if self.draft is not None else parts[self.index]}]'
+        return parts
+
+    def adjust(self, step):
+        self.commit()
+        year, month, day, hour, minute = self.values
+        if self.index in (0, 1):
+            if self.index == 0:
+                year += step
+            else:
+                offset = year * 12 + month - 1 + step
+                year, month = offset // 12, offset % 12 + 1
+            if not 1 <= year <= 9999:
+                raise ValueError('Year: use 1-9999.')
+            day = min(day, calendar.monthrange(year, month)[1])
+            value = datetime(year, month, day, hour, minute)
+        else:
+            value = datetime(*self.values) + timedelta(**{('days', 'hours', 'minutes')[self.index - 2]: step})
+        self.values = [value.year, value.month, value.day, value.hour, value.minute]
+
+    def due(self, now=None):
+        self.commit()
+        value = datetime(*self.values)
+        timestamp = value.timestamp()
+        if datetime.fromtimestamp(timestamp) != value:
+            raise ValueError('This local time does not exist. Choose another time.')
+        if timestamp <= (time.time() if now is None else now):
+            raise ValueError('Choose a future date and time.')
+        return timestamp
 
 
 def fitted(text, width):
@@ -78,13 +143,18 @@ class Dialog:
                     break
             if not sequence:
                 return 'escape'
-            return {b'[A': 'up', b'OA': 'up', b'[B': 'down', b'OB': 'down'}.get(sequence)
+            return {b'[A': 'up', b'OA': 'up', b'[B': 'down', b'OB': 'down',
+                    b'[C': 'right', b'OC': 'right', b'[D': 'left', b'OD': 'left',
+                    b'[Z': 'shift-tab', b'[H': 'home', b'OH': 'home', b'[1~': 'home',
+                    b'[F': 'end', b'OF': 'end', b'[4~': 'end'}.get(sequence)
         if value in (b'\x03', b'\x04'):
             return 'escape'
         if value in (b'\r', b'\n'):
             return 'enter'
         if value in (b'\x7f', b'\x08'):
             return 'backspace'
+        if value == b'\t':
+            return 'tab'
         return self.decoder.decode(value) or None
 
     def draw(self, title, lines, selected=None):
@@ -136,22 +206,41 @@ class Dialog:
             elif key and key in '123456789' and int(key) <= len(rows):
                 return rows[int(key) - 1].partition('\t')[0]
 
-    def prompt(self, error=''):
-        value = ''
+    def date_time(self, initial=None):
+        form, error = DateTimeForm(initial), ''
         while True:
-            self.draw('Custom time', ['Examples: 20m, 1h 30m, 20분 후, 내일 9시',
-                                     '2026-12-01 09:00 / tomorrow 09:00',
-                                     'Enter: save  Esc / blank: cancel', '',
-                                     'When (blank to cancel):', '> ' + value[-45:], error])
+            year, month, day, hour, minute = form.parts()
+            self.draw('Custom time', [
+                'Date and time (local)',
+                '←/→ / Tab: field   ↑/↓ / j/k: change', '',
+                f'Date:  {year} - {month} - {day}',
+                f'Time:  {hour} : {minute}', '',
+                'Digits: replace selected field',
+                'Enter: save   Esc: cancel', '', error,
+            ], 3 if form.index < 3 else 4)
             key = self.key()
             if key == 'escape':
-                return ''
-            if key == 'enter':
-                return value.strip()
-            if key == 'backspace':
-                value = value[:-1]
-            elif key and len(key) == 1 and key.isprintable() and len(value) < 200:
-                value += key
+                return None
+            try:
+                if key == 'enter':
+                    return form.due()
+                if key in ('left', 'h', 'shift-tab'):
+                    form.move(-1)
+                elif key in ('right', 'l', 'tab'):
+                    form.move(1)
+                elif key in ('home', 'end'):
+                    form.commit()
+                    form.index = 0 if key == 'home' else 4
+                elif key in ('up', 'k', 'down', 'j'):
+                    form.adjust(1 if key in ('up', 'k') else -1)
+                elif key == 'backspace':
+                    form.backspace()
+                elif key and key in '0123456789':
+                    form.digit(key)
+                if key is not None:
+                    error = ''
+            except (ValueError, OverflowError) as problem:
+                error = str(problem)
 
     def message(self, text):
         while True:

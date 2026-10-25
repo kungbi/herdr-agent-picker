@@ -1,6 +1,6 @@
 # Herdr Agent Picker
 
-**Preview · 0.1.0-preview.4** — development and implementation live on `preview`.
+**Preview · 0.1.0-preview.5** — development and implementation live on `preview`.
 The default branch is `main`.
 
 A compact, keyboard-driven agent popup for Herdr.
@@ -10,7 +10,8 @@ A compact, keyboard-driven agent popup for Herdr.
 *Illustrative preview using fictional tasks, projects and paths.*
 
 - Colored status first, bold task title, dim workspace/tab location.
-- `j`/`k` or arrow keys to navigate; Enter to focus; Esc to close.
+- `j`/`k` or arrow keys to navigate; `Ctrl+D`/`Ctrl+U` to move half a page.
+  Enter to focus; Esc to close.
 - Press `1`–`9` to focus a numbered item immediately, without Enter.
 - Current Done and Active agents come first, followed by idle completion history by date.
 - Completion ages such as `3m ago`; model metadata is hidden.
@@ -41,7 +42,7 @@ Install dependencies, then install directly through Herdr:
 herdr plugin install kungbi/herdr-agent-picker --ref preview
 ```
 
-For a fixed version, use `--ref v0.1.0-preview.4`. Run the same command again to
+For a fixed version, use `--ref v0.1.0-preview.5`. Run the same command again to
 update the installed preview. Configure the keybinding below after installing.
 
 Versioned `.tar.gz` and `.zip` packages with `SHA256SUMS` are available from
@@ -83,25 +84,25 @@ Select an agent and press `a` to schedule a reminder to revisit it, regardless o
 whether its work has finished. A small centered dialog opens over the agent list;
 Esc returns to the same selection. Custom input and the `r` reminder manager also
 use compact dialogs. Choose 5, 10, 15 or 30 minutes, 1 or 2 hours,
-tomorrow at 09:00, or **Custom time**. Custom input accepts, for example:
+tomorrow at 09:00, or **Custom time**.
 
-```text
-20m
-1h 30m
-20분 후
-내일 9시
-tomorrow 09:00
-2026-10-24 14:30
-```
+Custom time has separate **Date** (year, month, day) and **Time** (hour, minute)
+fields, prefilled to 30 minutes from now or the agent's existing reservation.
 
-Dates and clock times use your computer's local timezone. A clock time on its
-own, such as `09:00`, means its next occurrence. Explicit past dates are rejected.
+- `Tab` or `←`/`→`: select a field; brackets mark the active field.
+- `↑`/`↓` or `k`/`j`: increase or decrease its value.
+- Type digits to replace the selected field.
+- `Enter`: save; `Esc`: cancel.
+
+Dates and clock times use your computer's local timezone. Invalid dates and past
+times show an error without changing the reservation.
+
 Scheduled reminders appear beside their agent as `[alarm MM-DD HH:MM]`.
 
 There is one reminder per agent: setting another replaces it. Press `a` again
 and choose **Cancel current alarm**, or press `r` to list scheduled alarms and
 select one to cancel. Escape leaves a menu without changing the reservation or
-focus; leave the custom input blank to cancel it.
+focus; Escape also closes the custom date/time form.
 
 Reminders persist locally and run after the picker closes. At the due time,
 Herdr displays a notification with its completion sound. A desktop notification

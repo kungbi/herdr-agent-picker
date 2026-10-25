@@ -72,6 +72,11 @@ print(json.dumps({'result': result}))
         ('number_zero_ignored', 12, [b'0', b'9'], 'w1:p10'),
         ('navigate_tenth', 12, [b'jjjjjjj', b'\r'], 'w1:p11'),
         ('navigate_last', 12, [b'jjjjjjjjj', b'\r'], 'w1:p5'),
+        ('half_down', 40, [b'\x04', b'\r'], 'w1:p14'),
+        ('half_up', 40, [b'\x04\x15', b'\r'], 'w1:p1'),
+        ('half_up_top', 40, [b'\x15', b'\r'], 'w1:p3'),
+        ('half_down_end', 40, [b'\x04' * 8, b'\r'], 'w1:p5'),
+        ('half_up_end', 40, [b'\x04' * 8 + b'\x15', b'\r'], 'w1:p31'),
     ]
     for scenario, count, key_steps, expected in scenarios:
         focus_log = root / f'{scenario}.focus'
@@ -87,30 +92,33 @@ print(json.dumps({'result': result}))
         deadline = time.monotonic() + 8
         status = None
         try:
-            while b'Agent 5' not in output and time.monotonic() < deadline:
+            ready_item = b'Agent 5' if count <= 12 else b'Agent 10'
+            while ready_item not in output and time.monotonic() < deadline:
                 if select.select([fd], [], [], 0.1)[0]:
                     output.extend(os.read(fd, 65536))
-            assert b'Agent 5' in output, output.decode(errors='replace')
-            assert b'3m ago' in output, 'Completion age is missing'
-            for heading in (b'Active', b'Done', b'Yesterday', b'Other'):
-                assert heading in output, f'Missing section: {heading}'
+            assert ready_item in output, output.decode(errors='replace')
             ready_ms = (time.monotonic() - opened_at) * 1000
             calls = call_log.read_text().splitlines()
             assert calls in (["api snapshot"], ["agent list", "workspace list", "tab list"]), calls
-            assert b'gpt-6.1-sol' not in output, 'Model metadata is visible'
-            for state in (b'working', b'blocked', b'done', b'idle', b'unknown'):
-                assert b'[' + state + b']' in output, state
-            assert b'38;' in output, 'No ANSI foreground colors rendered'
-            state_colors = {state: color for color, state in re.findall(rb'\x1b\[([0-9;]*)m[^\x1b]*\[(working|blocked|done|idle|unknown)\]', output)}
-            assert len(set(state_colors.values())) == 5, state_colors
             assert not focus_log.exists(), 'Opening the picker changed focus'
-            plain = re.sub(rb'\x1b\[[0-9;]*m', b'', output)
-            assert plain.index(b'Done') < plain.index(b'Active'), 'Done must appear above Active'
-            assert plain.index(b'Active') < plain.index(b'Yesterday'), 'Active must appear above idle history'
-            assert plain.index(b'[working]') < plain.index(b'[idle]'), 'Idle must not precede Active'
-            numbers = re.findall(rb'\[(\d+)\]', plain)
-            expected_numbers = [str(number).encode() for number in range(1, min(count, 9) + 1)]
-            assert numbers == expected_numbers, numbers
+            if count <= 12:
+                assert b'3m ago' in output, 'Completion age is missing'
+                for heading in (b'Active', b'Done', b'Yesterday', b'Other'):
+                    assert heading in output, f'Missing section: {heading}'
+                assert b'gpt-6.1-sol' not in output, 'Model metadata is visible'
+                visible_states = (b'working', b'blocked', b'done', b'idle', b'unknown')
+                for state in visible_states:
+                    assert b'[' + state + b']' in output, state
+                assert b'38;' in output, 'No ANSI foreground colors rendered'
+                state_colors = {state: color for color, state in re.findall(rb'\x1b\[([0-9;]*)m[^\x1b]*\[(working|blocked|done|idle|unknown)\]', output)}
+                assert len(set(state_colors.values())) == len(visible_states), state_colors
+                plain = re.sub(rb'\x1b\[[0-9;]*m', b'', output)
+                assert plain.index(b'Done') < plain.index(b'Active'), 'Done must appear above Active'
+                assert plain.index(b'Active') < plain.index(b'Yesterday'), 'Active must appear above idle history'
+                assert plain.index(b'[working]') < plain.index(b'[idle]'), 'Idle must not precede Active'
+                numbers = re.findall(rb'\[(\d+)\]', plain)
+                expected_numbers = [str(number).encode() for number in range(1, min(count, 9) + 1)]
+                assert numbers == expected_numbers, numbers
             for keys in key_steps[:-1]:
                 os.write(fd, keys)
                 time.sleep(0.15)

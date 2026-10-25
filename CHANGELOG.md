@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.0-preview.5
+
+- Replace free-form custom time input with separate numeric date and time fields.
+  Use Tab or left/right to select, up/down or j/k to adjust, and digits to replace.
+- Prefill the existing reminder or a time 30 minutes ahead, and reject invalid
+  calendar dates, past times and nonexistent daylight-saving times.
+- Add Ctrl+D / Ctrl+U to move half a screen through agents, skipping headings.
+
 ## 0.1.0-preview.4
 
 - Match the picker’s dark selection and border colors in reminder dialogs.
