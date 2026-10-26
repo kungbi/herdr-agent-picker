@@ -43,7 +43,19 @@ print(json.dumps({'result': result}))
     socket.touch()
     config = root / 'config.toml'
     config.write_text('')
-    for scenario in ('preset_cancel', 'custom', 'custom_cancel', 'manager', 'escape', 'custom_escape', 'custom_retry', 'resize', 'empty_manager', 'jk', 'delayed_jk', 'delayed_arrows', 'delayed_custom'):
+    # Reproduce a slow CI process shutdown after its SQLite update is visible.
+    # Only the dedicated scenario imports this temporary startup hook.
+    (root / 'sitecustomize.py').write_text('''import atexit, os, sys, time
+from pathlib import Path
+def slow_exit():
+    marker = Path(os.environ['REMINDER_TEST_EXIT_LOG'])
+    marker.write_text('closing')
+    time.sleep(0.5)
+    marker.write_text('closed')
+if os.path.basename(sys.argv[0]) == 'agent_reminders.py' and sys.argv[1:2] in (['menu'], ['list']):
+    atexit.register(slow_exit)
+''')
+    for scenario in ('preset_cancel', 'custom', 'custom_cancel', 'manager', 'escape', 'custom_escape', 'custom_retry', 'resize', 'empty_manager', 'jk', 'delayed_jk', 'delayed_arrows', 'delayed_custom', 'slow_menu_exit'):
         state = root / scenario
         store = ReminderStore(state)
         focus = root / f'{scenario}.focus'
@@ -53,6 +65,9 @@ print(json.dumps({'result': result}))
             environment.update(TERM='xterm-256color', HERDR_BIN_PATH=str(fake), FOCUS=str(focus),
                                HERDR_PLUGIN_STATE_DIR=str(state), HERDR_CONFIG_PATH=str(config),
                                HERDR_SOCKET_PATH=str(socket))
+            if scenario == 'slow_menu_exit':
+                environment['PYTHONPATH'] = os.pathsep.join(filter(None, (str(root), environment.get('PYTHONPATH'))))
+                environment['REMINDER_TEST_EXIT_LOG'] = str(root / 'slow-exit.log')
             os.execve(sys.executable, [sys.executable, str(ROOT / 'agent-picker.py')], environment)
         fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack('HHHH', 26, 130, 0, 0))
         output = bytearray()
@@ -72,14 +87,22 @@ print(json.dumps({'result': result}))
                 drain()
             assert predicate(), output.decode(errors='replace')[-8000:]
 
+        def return_to_picker(keys):
+            checkpoint = len(output)
+            os.write(fd, keys)
+            # A DB update or a fixed sleep does not mean fzf owns input again.
+            # Its fresh header is drawn after the child command has exited.
+            wait_for(lambda: b'Ctrl+D/U' in output[checkpoint:])
+            if scenario == 'slow_menu_exit':
+                assert (root / 'slow-exit.log').read_text() == 'closed', 'Sent the next key before the menu process finished'
+
         try:
             wait_for(lambda: b'Fictional demo task' in output)
             output.clear()
             if scenario == 'empty_manager':
                 os.write(fd, b'r')
                 wait_for(lambda: b'No scheduled alarms.' in output)
-                os.write(fd, b'\x1b')
-                time.sleep(0.15)
+                return_to_picker(b'\x1b')
                 output.clear()
             os.write(fd, b'a')
             wait_for(lambda: b'Custom time' in output)
@@ -95,8 +118,7 @@ print(json.dumps({'result': result}))
                 wait_for(lambda: b'\x1b[4;18H' in output)
                 os.write(fd, b'\x1b[B\x1b[A')
             if scenario == 'escape':
-                os.write(fd, b'\x1b')
-                time.sleep(0.15)
+                return_to_picker(b'\x1b')
                 assert not store.pending()
                 os.write(fd, b'\r')
             started = time.time()
@@ -116,8 +138,7 @@ print(json.dumps({'result': result}))
                     if scenario == 'custom_escape':
                         os.write(fd, b'12')
                     output.clear()
-                    os.write(fd, b'\x1b')
-                    wait_for(lambda: b'Ctrl+D/U' in output)
+                    return_to_picker(b'\x1b')
                     assert not store.pending()
                     os.write(fd, b'\x1b')
                 else:
@@ -156,9 +177,8 @@ print(json.dumps({'result': result}))
                 os.write(fd, b'r' if scenario == 'manager' else b'a')
                 marker = b'Scheduled alarms' if scenario == 'manager' else b'Cancel current alarm'
                 wait_for(lambda: marker in output)
-                os.write(fd, b'\r' if scenario == 'manager' else b'9')
-                wait_for(lambda: not store.pending())
-                time.sleep(0.2)
+                return_to_picker(b'\r' if scenario == 'manager' else b'9')
+                assert not store.pending(), 'Cancellation did not persist'
                 os.write(fd, b'\r')
             deadline = time.monotonic() + 5
             while time.monotonic() < deadline:
@@ -168,7 +188,7 @@ print(json.dumps({'result': result}))
                     assert os.waitstatus_to_exitcode(status) == 0, output.decode(errors='replace')[-8000:]
                     break
                 drain()
-            assert exited
+            assert exited, f'{scenario}: picker did not exit; focus={focus.exists()}\n' + output.decode(errors='replace')[-3000:]
             assert focus.exists() == (scenario not in ('custom_cancel', 'custom_escape'))
             if focus.exists():
                 assert focus.read_text() == 'demo:p1'

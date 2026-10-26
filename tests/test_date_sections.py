@@ -48,4 +48,8 @@ assert result[0][1][0]['agent_status'] == 'done'
 assert agents[5]['agent_status'] == 'idle', 'Rendering mutated the API snapshot'
 times['today_new']['pending_done'] = False
 assert [title for title, _ in sections([agents[5]], times, now)] == ['Today']
-print('PASS: current Done/Active above idle history, newest Done first, dated idle history, no empty groups')
+history = [{'pane_id': 'history', 'agent_status': 'idle'}]
+history_times = {'history': {'status': 'idle', 'completed_at': datetime(2026, 10, 24, 12).timestamp()}}
+assert [title for title, _ in sections(history, history_times, datetime(2026, 10, 25, 23, 59, 59).timestamp())] == ['Yesterday']
+assert [title for title, _ in sections(history, history_times, datetime(2026, 10, 26, 0, 0, 1).timestamp())] == ['2026-10-24']
+print('PASS: current Done/Active above idle history, newest Done first, dated history across midnight, no empty groups')

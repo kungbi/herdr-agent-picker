@@ -1,6 +1,6 @@
 # Herdr Agent Picker
 
-**Preview · 0.1.0-preview.6** — development and implementation live on `preview`.
+**Preview · 0.1.0-preview.7** — development and implementation live on `preview`.
 The default branch is `main`.
 
 A compact, keyboard-driven agent popup for Herdr.
@@ -42,7 +42,7 @@ Install dependencies, then install directly through Herdr:
 herdr plugin install kungbi/herdr-agent-picker --ref preview
 ```
 
-For a fixed version, use `--ref v0.1.0-preview.6`. Run the same command again to
+For a fixed version, use `--ref v0.1.0-preview.7`. Run the same command again to
 update the installed preview. Configure the keybinding below after installing.
 
 Versioned `.tar.gz` and `.zip` packages with `SHA256SUMS` are available from

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.0-preview.7
+
+- Stabilize terminal tests by waiting for the picker to redraw after dialogs
+  exit, including slow child-process shutdowns.
+- Verify completion history correctly when a test run crosses local midnight,
+  including the Yesterday-to-date transition.
+
 ## 0.1.0-preview.6
 
 - Change Ctrl+D / Ctrl+U to move five agents at a time, regardless of window size.

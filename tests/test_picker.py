@@ -1,4 +1,5 @@
 import errno
+from datetime import datetime, timedelta
 import fcntl
 import json
 import os
@@ -55,8 +56,9 @@ print(json.dumps({'result': result}))
     socket_path.touch()
     os.environ.update(HERDR_SOCKET_PATH=str(socket_path), HERDR_CONFIG_PATH=str(config), HERDR_PLUGIN_STATE_DIR=str(root / 'plugin-state'))
     record_event({'event': 'pane_agent_status_changed', 'data': {'pane_id': 'w1:p3', 'agent_status': 'done'}}, cache_path(), time.time() - 180)
-    record_event({'event': 'pane_agent_status_changed', 'data': {'pane_id': 'w1:p4', 'agent_status': 'done'}}, cache_path(), time.time() - 86400)
-    record_event({'event': 'pane_agent_status_changed', 'data': {'pane_id': 'w1:p4', 'agent_status': 'idle'}}, cache_path(), time.time() - 86399)
+    history_time = (datetime.now() - timedelta(days=1)).replace(hour=12, minute=0, second=0, microsecond=0)
+    record_event({'event': 'pane_agent_status_changed', 'data': {'pane_id': 'w1:p4', 'agent_status': 'done'}}, cache_path(), history_time.timestamp())
+    record_event({'event': 'pane_agent_status_changed', 'data': {'pane_id': 'w1:p4', 'agent_status': 'idle'}}, cache_path(), history_time.timestamp() + 1)
 
     scenarios = [
         ('select', 5, [b'jkj', b'\r'], 'w1:p4'),
@@ -84,6 +86,7 @@ print(json.dumps({'result': result}))
         focus_log = root / f'{scenario}.focus'
         call_log = root / f'{scenario}.calls'
         opened_at = time.monotonic()
+        opened_day = datetime.now().date()
         pid, fd = pty.fork()
         if pid == 0:
             environment = os.environ.copy()
@@ -105,7 +108,15 @@ print(json.dumps({'result': result}))
             assert not focus_log.exists(), 'Opening the picker changed focus'
             if count <= 12:
                 assert b'3m ago' in output, 'Completion age is missing'
-                for heading in (b'Active', b'Done', b'Yesterday', b'Other'):
+                # Rendering may cross midnight: this fixture then moves from
+                # Yesterday to its ISO date, just as real completion history does.
+                history_labels = {
+                    {0: 'Today', 1: 'Yesterday'}.get((day - history_time.date()).days, history_time.date().isoformat()).encode()
+                    for day in (opened_day, datetime.now().date())
+                }
+                history_heading = next((heading for heading in history_labels if heading in output), None)
+                assert history_heading is not None, f'Missing history section: {history_labels}'
+                for heading in (b'Active', b'Done', b'Other'):
                     assert heading in output, f'Missing section: {heading}'
                 assert b'gpt-6.1-sol' not in output, 'Model metadata is visible'
                 visible_states = (b'working', b'blocked', b'done', b'idle', b'unknown')
@@ -116,7 +127,7 @@ print(json.dumps({'result': result}))
                 assert len(set(state_colors.values())) == len(visible_states), state_colors
                 plain = re.sub(rb'\x1b\[[0-9;]*m', b'', output)
                 assert plain.index(b'Done') < plain.index(b'Active'), 'Done must appear above Active'
-                assert plain.index(b'Active') < plain.index(b'Yesterday'), 'Active must appear above idle history'
+                assert plain.index(b'Active') < plain.index(history_heading), 'Active must appear above idle history'
                 assert plain.index(b'[working]') < plain.index(b'[idle]'), 'Idle must not precede Active'
                 numbers = re.findall(rb'\[(\d+)\]', plain)
                 expected_numbers = [str(number).encode() for number in range(1, min(count, 9) + 1)]
