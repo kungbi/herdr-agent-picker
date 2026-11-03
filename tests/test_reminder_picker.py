@@ -34,6 +34,9 @@ if sys.argv[1:] == ['api', 'snapshot']:
 elif sys.argv[1:3] == ['agent', 'focus']:
     Path(os.environ['FOCUS']).write_text(sys.argv[3])
     result = {}
+elif sys.argv[1:3] == ['pane', 'read']:
+    print('PREVIEW for ' + sys.argv[3])
+    raise SystemExit(0)
 else:
     raise SystemExit('Unexpected command; tests must not notify')
 print(json.dumps({'result': result}))
@@ -152,6 +155,8 @@ if os.path.basename(sys.argv[0]) == 'agent_reminders.py' and sys.argv[1:2] in ([
                     os.write(fd, b'\r')
                     wait_for(lambda: bool(store.pending()))
                     assert store.pending()[0]['due'] == target.timestamp()
+                    wait_for(lambda: b'Ctrl+D/U' in output)
+                    os.write(fd, b'p')  # Reveal the end-of-row badge in the narrow fixture.
                     wait_for(lambda: b'[alarm ' in output)
                     os.write(fd, b'\r')
             else:
@@ -171,6 +176,8 @@ if os.path.basename(sys.argv[0]) == 'agent_reminders.py' and sys.argv[1:2] in ([
                 wait_for(lambda: bool(store.pending()))
                 duration = 600 if scenario in ('jk', 'delayed_jk', 'delayed_arrows') else 300
                 assert started + duration - 5 < store.pending()[0]['due'] < time.time() + duration + 5, store.pending()[0]
+                wait_for(lambda: b'Ctrl+D/U' in output)
+                os.write(fd, b'p')  # Reveal the end-of-row badge in the narrow fixture.
                 wait_for(lambda: b'[alarm ' in output)
                 assert not focus.exists(), 'Setting an alarm focused the agent'
                 output.clear()

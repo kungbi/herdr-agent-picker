@@ -50,6 +50,26 @@ def display_title(value):
     )
 
 
+def preview(pane_id):
+    if not pane_id or pane_id == '@section':
+        return
+    try:
+        result = subprocess.run(
+            [HERDR, 'pane', 'read', pane_id, '--source', 'recent-unwrapped', '--lines', '30', '--format', 'ansi'],
+            text=True, capture_output=True, check=True, timeout=3,
+        )
+        # Source-terminal right-edge padding otherwise wraps into empty preview rows.
+        text = re.sub(
+            r'[ \t]{2,}((?:\x1b\[[0-9;:]*m)*)│((?:\x1b\[[0-9;:]*m)*)$',
+            r'\1\2', result.stdout, flags=re.MULTILINE,
+        )
+        text = re.sub(r'[ \t]+((?:\x1b\[[0-9;:]*m)*)$', r'\1', text, flags=re.MULTILINE)
+        # Let fzf render ANSI styles; stripping ESC leaves visible code fragments.
+        sys.stdout.write(text)
+    except (OSError, subprocess.SubprocessError):
+        print('Preview unavailable')
+
+
 def status_label(status):
     # Match Herdr's Dracula status palette and dot indicators.
     colors = {
@@ -144,6 +164,7 @@ def render_rows():
             ))
             name = label(agent.get("name") or agent.get("display_agent") or agent["agent"])
             title = display_title(agent.get("terminal_title_stripped") or agent.get("title")) or name
+            agent_label = f" · {name}" if name != title else ""
             age = completion_age(agent, times, now)
             age_label = f"\033[2m{age}\033[22m " if age else ""
             alarm_label = ''
@@ -154,7 +175,7 @@ def render_rows():
                 f"{agent['pane_id']}\t{number_label}{status_label(agent['agent_status'])} "
                 f"{age_label}"
                 f"\033[1m{title}\033[22m "
-                f"\033[2m· {location}\033[22m{alarm_label}"
+                f"\033[2m· {location}{agent_label}\033[22m{alarm_label}"
             )
     return rows, selected_index
 
@@ -221,14 +242,23 @@ def main():
             sys.executable, str(Path(__file__).resolve()), "--refresh", str(cache),
         ])
         reminder_command = shlex.join([sys.executable, str(Path(__file__).with_name('agent_reminders.py').resolve())])
+        preview_command = shlex.join([sys.executable, str(Path(__file__).resolve()), '--preview']) + ' {1}'
+        search_keys = 'j,k,a,r,p,q,/,1,2,3,4,5,6,7,8,9,ctrl-d,ctrl-u'
         choice = subprocess.run(
             [FZF, "--ansi", "--color=dark,fg+:-1", "--sync", "--no-input", "--no-sort", "--no-multi", "--layout=reverse",
              "--track", "--id-nth=1",
              # Raw mode displays non-matching section headings; match navigation skips them.
              "--raw", "--query=!^──", "--with-shell=/bin/sh -c",
              "--delimiter=\t", "--with-nth=2..", "--border=rounded", "--border-label= Agents ",
-             "--header=1-9/Enter: focus  j/k ↑↓: move  Ctrl+D/U: 5 agents  a: alarm  r: alarms  Esc: close",
-             f"--bind=j:down-match,k:up-match,down:down-match,up:up-match,ctrl-j:down-match,ctrl-k:up-match,esc:abort,load:pos({selected_index})+unbind(load)",
+             "--header=1-9/Enter: focus  Ctrl+D/U: jump  /: search  p: preview  a/r: alarm  Esc: back/close  q: close",
+             f"--preview={preview_command}", "--preview-window=right:60%:wrap-word",
+             f"--bind=/:show-input+clear-query+disable-raw+unbind({search_keys})",
+             "--bind=p:toggle-preview,q:abort",
+             f"--bind=j:down-match,k:up-match,down:down-match,up:up-match,ctrl-j:down-match,ctrl-k:up-match,load:pos({selected_index})+unbind(load)",
+             f'--bind=esc:transform:if [ "$FZF_INPUT_STATE" = hidden ]; then printf abort; '
+             f"else printf '%s' 'change-query(!^──)+enable-raw+rebind({search_keys})'; fi",
+             # Hiding input inside transform would discard its query change.
+             "--bind=esc:+hide-input",
              "--bind=enter:transform:if [ -n {1} ] && [ {1} != '@section' ]; then printf accept; fi",
              "--bind=double-click:transform:if [ -n {1} ] && [ {1} != '@section' ]; then printf accept; fi",
              f"--bind=every(1):bg-transform:{reload_command}",
@@ -252,7 +282,9 @@ def main():
 
 if __name__ == "__main__":
     try:
-        if len(sys.argv) == 3 and sys.argv[1] == "--rows":
+        if len(sys.argv) == 3 and sys.argv[1] == "--preview":
+            preview(sys.argv[2])
+        elif len(sys.argv) == 3 and sys.argv[1] == "--rows":
             # Keep already-open popups compatible until they are reopened.
             sys.stdout.write(refresh_rows(Path(sys.argv[2])))
         elif len(sys.argv) == 3 and sys.argv[1] == "--refresh":

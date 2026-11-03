@@ -9,6 +9,7 @@ import re
 import select
 import signal
 import struct
+import subprocess
 import sys
 import tempfile
 import termios
@@ -45,6 +46,20 @@ elif args == ['tab', 'list']:
 elif args[:2] == ['agent', 'focus']:
     Path(os.environ['PICKER_FOCUS_LOG']).write_text(args[2])
     result = {}
+elif args[:2] == ['pane', 'read']:
+    preview_text = 'PREVIEW for ' + args[2]
+    if os.environ.get('PICKER_LONG_PREVIEW'):
+        preview_text += '\\nLONG_PREVIEW ' + 'word ' * 40 + 'END_OF_PREVIEW'
+    if os.environ.get('PICKER_PADDED_PREVIEW'):
+        preview_text += '\\n' + '\\n'.join(
+            (f'    ROW {number}' if number != 3 else '') + ' ' * 142
+            + '\\x1b[0m\\x1b[38;2;22;142;142m│\\x1b[0m'
+            for number in range(8)
+        ) + '\\n    한글 들여쓰기   \\x1b[0m\\nliteral │\\nPADDED_END'
+    if '--raw' in args or args[-2:] == ['--format', 'ansi']:
+        preview_text = '\\x1b[38;2;17;203;91m' + preview_text + '\\x1b[0m'
+    print(preview_text)
+    raise SystemExit(0)
 else:
     raise SystemExit(2)
 print(json.dumps({'result': result}))
@@ -55,12 +70,42 @@ print(json.dumps({'result': result}))
     socket_path = root / 'session.sock'
     socket_path.touch()
     os.environ.update(HERDR_SOCKET_PATH=str(socket_path), HERDR_CONFIG_PATH=str(config), HERDR_PLUGIN_STATE_DIR=str(root / 'plugin-state'))
+    preview_calls = root / 'colored-preview.calls'
+    preview_result = subprocess.run(
+        [PYTHON, PICKER, '--preview', 'w1:p1'],
+        env=dict(os.environ, HERDR_BIN_PATH=str(fake), PICKER_CALL_LOG=str(preview_calls)),
+        text=True, capture_output=True, check=True, timeout=5,
+    )
+    assert preview_result.stdout == '\x1b[38;2;17;203;91mPREVIEW for w1:p1\x1b[0m\n', repr(preview_result.stdout)
+    assert preview_calls.read_text().splitlines() == [
+        'pane read w1:p1 --source recent-unwrapped --lines 30 --format ansi',
+    ], preview_calls.read_text()
+    print('PASS: preview preserves rendered ANSI colors without adding blank lines')
     record_event({'event': 'pane_agent_status_changed', 'data': {'pane_id': 'w1:p3', 'agent_status': 'done'}}, cache_path(), time.time() - 180)
     history_time = (datetime.now() - timedelta(days=1)).replace(hour=12, minute=0, second=0, microsecond=0)
     record_event({'event': 'pane_agent_status_changed', 'data': {'pane_id': 'w1:p4', 'agent_status': 'done'}}, cache_path(), history_time.timestamp())
     record_event({'event': 'pane_agent_status_changed', 'data': {'pane_id': 'w1:p4', 'agent_status': 'idle'}}, cache_path(), history_time.timestamp() + 1)
 
     scenarios = [
+        ('preview_padded', 5, [b'\r'], 'w1:p1'),
+        ('quit', 5, [b'q'], None),
+        ('search_q_text', 5, [b'/', b'Agent 2q', b'\r', b'\x7f', b'\r'], 'w1:p2'),
+        ('search_escape_quit', 5, [b'/', b'q', b'\x1b', b'q'], None),
+        ('search_title', 5, [b'/', b'Agent 2', b'\r'], 'w1:p2'),
+        ('search_workspace', 5, [b'/', b'Test workspace', b'\r'], 'w1:p1'),
+        ('search_agent_name', 5, [b'/', b'claude', b'\r'], 'w1:p1'),
+        ('search_escape_empty', 5, [b'/', b'\x1b', b'\x1b'], None),
+        ('search_escape_text', 5, [b'/', b'Agent 2', b'\x1b', b'\x1b'], None),
+        ('search_escape_number', 5, [b'/', b'Agent 2', b'\x1b', b'1'], 'w1:p3'),
+        ('search_escape_no_match', 5, [b'/', b'No such agent 987', b'\x1b', b'1'], 'w1:p3'),
+        ('search_escape_navigation', 5, [b'/', b'Agent 2', b'\x1b', b'j', b'\r'], 'w1:p1'),
+        ('search_escape_preview', 5, [b'/', b'Agent 2', b'\x1b', b'p', b'p', b'\r'], 'w1:p2'),
+        ('search_escape_reenter', 5, [b'/', b'Agent 2', b'\x1b', b'/', b'Agent 4', b'\r'], 'w1:p4'),
+        ('preview_default', 5, [b'\r'], 'w1:p1'),
+        ('preview_move', 5, [b'j', b'\r'], 'w1:p4'),
+        ('preview_toggle', 5, [b'p', b'p', b'\r'], 'w1:p1'),
+        ('preview_hidden', 5, [b'p', b'j', b'\r'], 'w1:p4'),
+        ('preview_long_line', 5, [b'\r'], 'w1:p1'),
         ('select', 5, [b'jkj', b'\r'], 'w1:p4'),
         ('cancel', 5, [b'jkj', b'\x1b'], None),
         ('cross_up', 5, [b'jk', b'\r'], 'w1:p1'),
@@ -90,7 +135,11 @@ print(json.dumps({'result': result}))
         pid, fd = pty.fork()
         if pid == 0:
             environment = os.environ.copy()
-            environment.update(TERM='xterm-256color', HERDR_BIN_PATH=str(fake), HERDR_CONFIG_PATH=str(config), PICKER_FOCUS_LOG=str(focus_log), PICKER_CALL_LOG=str(call_log), PICKER_AGENT_COUNT=str(count))
+            environment.update(TERM='xterm-256color', COLORTERM='truecolor', HERDR_BIN_PATH=str(fake), HERDR_CONFIG_PATH=str(config), PICKER_FOCUS_LOG=str(focus_log), PICKER_CALL_LOG=str(call_log), PICKER_AGENT_COUNT=str(count))
+            if scenario == 'preview_long_line':
+                environment['PICKER_LONG_PREVIEW'] = '1'
+            if scenario == 'preview_padded':
+                environment['PICKER_PADDED_PREVIEW'] = '1'
             os.execve(PYTHON, [PYTHON, PICKER], environment)
         fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack('HHHH', 24, 100, 0, 0))
         output = bytearray()
@@ -98,13 +147,16 @@ print(json.dumps({'result': result}))
         status = None
         try:
             ready_item = b'Agent 5' if count <= 12 else b'Agent 10'
-            while ready_item not in output and time.monotonic() < deadline:
+            while (ready_item not in output or b'PREVIEW for w1:p1' not in output) and time.monotonic() < deadline:
                 if select.select([fd], [], [], 0.1)[0]:
                     output.extend(os.read(fd, 65536))
             assert ready_item in output, output.decode(errors='replace')
+            assert b'PREVIEW for w1:p1' in output, 'Preview is not visible by default'
             ready_ms = (time.monotonic() - opened_at) * 1000
             calls = call_log.read_text().splitlines()
-            assert calls in (["api snapshot"], ["agent list", "workspace list", "tab list"]), calls
+            data_calls = [call for call in calls if not call.startswith('pane read ')]
+            assert data_calls in (["api snapshot"], ["agent list", "workspace list", "tab list"]), calls
+            assert 'pane read w1:p1 --source recent-unwrapped --lines 30 --format ansi' in calls, calls
             assert not focus_log.exists(), 'Opening the picker changed focus'
             if count <= 12:
                 assert b'3m ago' in output, 'Completion age is missing'
@@ -133,9 +185,50 @@ print(json.dumps({'result': result}))
                 expected_numbers = [str(number).encode() for number in range(1, min(count, 9) + 1)]
                 assert numbers == expected_numbers, numbers
             for keys in key_steps[:-1]:
+                if scenario.startswith('search_') and keys == b'/':
+                    while select.select([fd], [], [], 0.05)[0]:
+                        os.read(fd, 65536)
+                    output.clear()
                 os.write(fd, keys)
-                time.sleep(0.15)
+                step_deadline = time.monotonic() + (0.6 if scenario.startswith('search_') else 0.15)
+                while time.monotonic() < step_deadline:
+                    if select.select([fd], [], [], 0.05)[0]:
+                        try:
+                            output.extend(os.read(fd, 65536))
+                        except OSError as error:
+                            if error.errno != errno.EIO:
+                                raise
+                            break
+                assert os.waitpid(pid, os.WNOHANG)[0] == 0, f'{scenario}: picker closed before the final action'
+                if scenario.startswith('search_') and keys == b'/':
+                    while select.select([fd], [], [], 0.05)[0]:
+                        output.extend(os.read(fd, 65536))
+                    assert b'!^' not in output, repr(output[-4000:])
                 assert not focus_log.exists(), 'Partial input or navigation changed focus'
+            if scenario in ('preview_default', 'preview_move', 'preview_toggle', 'preview_long_line', 'preview_padded', 'search_escape_preview'):
+                preview_text = f'PREVIEW for {expected}'.encode()
+                until = time.monotonic() + 3
+                while preview_text not in output and time.monotonic() < until:
+                    if select.select([fd], [], [], 0.1)[0]:
+                        output.extend(os.read(fd, 65536))
+                assert preview_text in output, output.decode(errors='replace')
+                assert re.search(rb'\x1b\[[0-9;]*38;2;17;203;91(?:;[0-9;]*)?m', output), 'Preview color was lost'
+                plain_preview = re.sub(rb'\x1b\[[0-?]*[ -/]*[@-~]', b'', output)
+                assert b'[38;2;17;203;91m' not in plain_preview, 'ANSI fragments are visible'
+            if scenario == 'preview_long_line':
+                until = time.monotonic() + 3
+                while b'END_OF_PREVIEW' not in output and time.monotonic() < until:
+                    if select.select([fd], [], [], 0.1)[0]:
+                        output.extend(os.read(fd, 65536))
+                assert b'LONG_PREVIEW' in output and b'END_OF_PREVIEW' in output, 'Long preview line was clipped'
+            if scenario == 'preview_hidden':
+                assert not any(call.startswith('pane read w1:p4 ') for call in call_log.read_text().splitlines()), 'Hidden preview still reads panes'
+            if scenario == 'preview_padded':
+                until = time.monotonic() + 3
+                while b'PADDED_END' not in output and time.monotonic() < until:
+                    if select.select([fd], [], [], 0.1)[0]:
+                        output.extend(os.read(fd, 65536))
+                assert b'PADDED_END' in output, 'Right-edge padding wrapped into blank rows and pushed content off screen'
             os.write(fd, key_steps[-1])
             while time.monotonic() < deadline:
                 done, status = os.waitpid(pid, os.WNOHANG)
@@ -153,11 +246,29 @@ print(json.dumps({'result': result}))
             if expected is None:
                 assert not focus_log.exists(), 'Escape changed focus'
             else:
-                assert focus_log.read_text() == expected, focus_log.read_text()
-            print(f'PASS: {scenario}; ready {ready_ms:.1f} ms; {len(calls)} data request(s); real fzf, fake Herdr')
+                assert focus_log.read_text() == expected, (scenario, focus_log.read_text(), output.decode(errors='replace')[-3000:])
+            print(f'PASS: {scenario}; ready {ready_ms:.1f} ms; {len(data_calls)} snapshot request(s); real fzf, fake Herdr')
         finally:
             try:
                 os.kill(pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
             os.close(fd)
+
+    padded_environment = dict(os.environ, HERDR_BIN_PATH=str(fake),
+                              PICKER_CALL_LOG=str(root / 'padded-output.calls'), PICKER_PADDED_PREVIEW='1')
+    padded_result = subprocess.run(
+        [PYTHON, PICKER, '--preview', 'w1:p1'], env=padded_environment,
+        text=True, capture_output=True, check=True, timeout=5,
+    ).stdout
+    original_padded = subprocess.run(
+        [str(fake), 'pane', 'read', 'w1:p1', '--format', 'ansi'], env=padded_environment,
+        text=True, capture_output=True, check=True, timeout=5,
+    ).stdout
+    styles = re.compile(r'\x1b\[[0-9;:]*m')
+    assert styles.findall(padded_result) == styles.findall(original_padded), 'Padding cleanup changed ANSI styles'
+    assert styles.sub('', padded_result) == (
+        'PREVIEW for w1:p1\n' + '\n'.join(f'    ROW {number}' if number != 3 else '' for number in range(8))
+        + '\n    한글 들여쓰기\nliteral │\nPADDED_END\n'
+    ), repr(padded_result)
+    print('PASS: padding cleanup preserves colors, Korean indentation, blank lines and literal pipes')

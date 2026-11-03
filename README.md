@@ -11,7 +11,17 @@ A compact, keyboard-driven agent popup for Herdr.
 
 - Colored status first, bold task title, dim workspace/tab location.
 - `j`/`k` or arrow keys to navigate; `Ctrl+D`/`Ctrl+U` to move five agents at a time.
-  Enter to focus; Esc to close.
+  Enter to focus; Esc or `q` to close in normal mode.
+- Press `/` to search by task, workspace, tab, or agent name. Use arrow keys to
+  navigate results and Enter to focus. Esc clears the search and returns to normal
+  navigation without closing the picker, even with an empty query or no matches.
+  Press Esc or `q` in normal mode to close; while searching, `q` is ordinary text.
+- Preview opens automatically on the right, using 60% of the popup width.
+  It shows the selected pane's last 30 terminal rows with colors, joins soft-wrapped
+  lines and wraps them to the preview width. Press `p` outside search to hide or show it.
+  Right-edge padding is removed so it does not wrap into extra blank rows.
+  This is a terminal snapshot, so the agent's status bar and input prompt may also appear.
+  Preview may contain sensitive terminal output; hide it before sharing your screen.
 - Press `1`–`9` to focus a numbered item immediately, without Enter.
 - Current Done and Active agents come first, followed by idle completion history by date.
 - Completion ages such as `3m ago`; model metadata is hidden.
