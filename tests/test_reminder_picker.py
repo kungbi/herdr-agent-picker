@@ -34,6 +34,8 @@ if sys.argv[1:] == ['api', 'snapshot']:
 elif sys.argv[1:3] == ['agent', 'focus']:
     Path(os.environ['FOCUS']).write_text(sys.argv[3])
     result = {}
+elif sys.argv[1:3] == ['agent', 'get']:
+    result = {'agent': {'agent': 'demo'}}
 elif sys.argv[1:3] == ['pane', 'read']:
     print('PREVIEW for ' + sys.argv[3])
     raise SystemExit(0)
@@ -61,6 +63,9 @@ if os.path.basename(sys.argv[0]) == 'agent_reminders.py' and sys.argv[1:2] in ([
     for scenario in ('preset_cancel', 'custom', 'custom_cancel', 'manager', 'escape', 'custom_escape', 'custom_retry', 'resize', 'empty_manager', 'jk', 'delayed_jk', 'delayed_arrows', 'delayed_custom', 'slow_menu_exit'):
         state = root / scenario
         store = ReminderStore(state)
+        # These tests exercise dialogs, not a race with first-time schema creation.
+        with store.database(create=True):
+            pass
         focus = root / f'{scenario}.focus'
         pid, fd = pty.fork()
         if pid == 0:

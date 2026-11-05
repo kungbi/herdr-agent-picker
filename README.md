@@ -17,11 +17,12 @@ A compact, keyboard-driven agent popup for Herdr.
   navigation without closing the picker, even with an empty query or no matches.
   Press Esc or `q` in normal mode to close; while searching, `q` is ordinary text.
 - Preview opens automatically on the right, using 60% of the popup width.
-  It shows the selected pane's last 30 terminal rows with colors, joins soft-wrapped
-  lines and wraps them to the preview width. Press `p` outside search to hide or show it.
-  Right-edge padding is removed so it does not wrap into extra blank rows.
-  This is a terminal snapshot, so the agent's status bar and input prompt may also appear.
-  Preview may contain sensitive terminal output; hide it before sharing your screen.
+  Hermes previews read the selected session's saved conversation, newest first,
+  and let fzf wrap the text to the available width. Colored role labels replace
+  the original terminal frame: no copied padding, status bar, or input prompt.
+  Press `p` outside search to hide or show it.
+  Other agents retain the last-30-row colored terminal snapshot fallback.
+  Preview may contain sensitive conversation text; hide it before screen sharing.
 - Press `1`–`9` to focus a numbered item immediately, without Enter.
 - Current Done and Active agents come first, followed by idle completion history by date.
 - Completion ages such as `3m ago`; model metadata is hidden.
@@ -87,6 +88,28 @@ Then run `herdr server reload-config`. Use your prefix followed by `g`.
 
 No Python packages or compilation step are required. The same source package
 runs on macOS and Linux with the dependencies listed above.
+
+## Hermes conversation preview
+
+The selected pane's foreground process supplies `HERMES_HOME` and
+`HERMES_TUI_ACTIVE_SESSION_FILE`; the latter tracks the durable session ID across
+new/resumed conversations. A native Herdr session ID is also supported when the
+process supplies one unambiguous profile home. The picker never guesses a session
+from its title or from another profile's most-recent history.
+
+Only that profile's `state.db` is opened, in SQLite read-only mode. Up to 24 recent
+active messages are read, with at most 8 KiB of text per message. System, hidden,
+model-only and compression-summary records are excluded. Tool calls/results show
+names only, not raw arguments, output or reasoning. Large structured messages are
+omitted rather than decoding partial JSON. No Hermes process is started, no
+migrations are run, and no conversation text is cached by the picker.
+
+The visible preview refreshes with the one-second list refresh even when the
+agent's status does not change. This is **saved progress**, not a token stream:
+ordinary assistant replies appear after saving, and tool calls/results appear at
+their persistence boundaries. Some runtimes save only after a whole turn.
+Missing identity, unavailable databases and ambiguous compression continuations
+show an unavailable message; Enter still opens the original pane.
 
 ## Reminders
 

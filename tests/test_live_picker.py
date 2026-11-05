@@ -50,6 +50,8 @@ if args == ['api', 'snapshot']:
 elif args[:2] == ['agent', 'focus']:
     Path(os.environ['FOCUS']).write_text(args[2])
     result = {}
+elif args[:2] == ['agent', 'get']:
+    result = {'agent': {'agent': 'claude'}}
 elif args[:2] == ['pane', 'read']:
     print('PREVIEW for ' + args[2])
     raise SystemExit(0)

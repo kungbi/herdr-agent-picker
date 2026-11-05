@@ -46,16 +46,18 @@ elif args == ['tab', 'list']:
 elif args[:2] == ['agent', 'focus']:
     Path(os.environ['PICKER_FOCUS_LOG']).write_text(args[2])
     result = {}
+elif args[:2] == ['agent', 'get']:
+    result = {'agent': {'agent': 'claude'}}
 elif args[:2] == ['pane', 'read']:
     preview_text = 'PREVIEW for ' + args[2]
     if os.environ.get('PICKER_LONG_PREVIEW'):
         preview_text += '\\nLONG_PREVIEW ' + 'word ' * 40 + 'END_OF_PREVIEW'
     if os.environ.get('PICKER_PADDED_PREVIEW'):
         preview_text += '\\n' + '\\n'.join(
-            (f'    ROW {number}' if number != 3 else '') + ' ' * 142
-            + '\\x1b[0m\\x1b[38;2;22;142;142m│\\x1b[0m'
+            (f'    ROW {number}' if number != 3 else '').ljust(289)
+            + '\\x1b[0m\\x1b[38;2;22;142;142m' + ('┃' if number < 6 else '│') + '\\x1b[0m'
             for number in range(8)
-        ) + '\\n    한글 들여쓰기   \\x1b[0m\\nliteral │\\nPADDED_END'
+        ) + '\\n    한글 들여쓰기   \\x1b[0m\\nliteral │\\nliteral ┃\\nPADDED_END'
     if '--raw' in args or args[-2:] == ['--format', 'ansi']:
         preview_text = '\\x1b[38;2;17;203;91m' + preview_text + '\\x1b[0m'
     print(preview_text)
@@ -78,6 +80,7 @@ print(json.dumps({'result': result}))
     )
     assert preview_result.stdout == '\x1b[38;2;17;203;91mPREVIEW for w1:p1\x1b[0m\n', repr(preview_result.stdout)
     assert preview_calls.read_text().splitlines() == [
+        'agent get w1:p1',
         'pane read w1:p1 --source recent-unwrapped --lines 30 --format ansi',
     ], preview_calls.read_text()
     print('PASS: preview preserves rendered ANSI colors without adding blank lines')
@@ -89,18 +92,19 @@ print(json.dumps({'result': result}))
     scenarios = [
         ('preview_padded', 5, [b'\r'], 'w1:p1'),
         ('quit', 5, [b'q'], None),
-        ('search_q_text', 5, [b'/', b'Agent 2q', b'\r', b'\x7f', b'\r'], 'w1:p2'),
+        ('search_q_text', 5, [b'/', b'Agent2q', b'\r', b'\x7f', b'\r'], 'w1:p2'),
         ('search_escape_quit', 5, [b'/', b'q', b'\x1b', b'q'], None),
-        ('search_title', 5, [b'/', b'Agent 2', b'\r'], 'w1:p2'),
+        # One fuzzy term avoids matching the separate '2' against a clock-dependent age.
+        ('search_title', 5, [b'/', b'Agent2', b'\r'], 'w1:p2'),
         ('search_workspace', 5, [b'/', b'Test workspace', b'\r'], 'w1:p1'),
         ('search_agent_name', 5, [b'/', b'claude', b'\r'], 'w1:p1'),
         ('search_escape_empty', 5, [b'/', b'\x1b', b'\x1b'], None),
-        ('search_escape_text', 5, [b'/', b'Agent 2', b'\x1b', b'\x1b'], None),
-        ('search_escape_number', 5, [b'/', b'Agent 2', b'\x1b', b'1'], 'w1:p3'),
+        ('search_escape_text', 5, [b'/', b'Agent2', b'\x1b', b'\x1b'], None),
+        ('search_escape_number', 5, [b'/', b'Agent2', b'\x1b', b'1'], 'w1:p3'),
         ('search_escape_no_match', 5, [b'/', b'No such agent 987', b'\x1b', b'1'], 'w1:p3'),
-        ('search_escape_navigation', 5, [b'/', b'Agent 2', b'\x1b', b'j', b'\r'], 'w1:p1'),
-        ('search_escape_preview', 5, [b'/', b'Agent 2', b'\x1b', b'p', b'p', b'\r'], 'w1:p2'),
-        ('search_escape_reenter', 5, [b'/', b'Agent 2', b'\x1b', b'/', b'Agent 4', b'\r'], 'w1:p4'),
+        ('search_escape_navigation', 5, [b'/', b'Agent2', b'\x1b', b'j', b'\r'], 'w1:p1'),
+        ('search_escape_preview', 5, [b'/', b'Agent2', b'\x1b', b'p', b'p', b'\r'], 'w1:p2'),
+        ('search_escape_reenter', 5, [b'/', b'Agent2', b'\x1b', b'/', b'Agent4', b'\r'], 'w1:p4'),
         ('preview_default', 5, [b'\r'], 'w1:p1'),
         ('preview_move', 5, [b'j', b'\r'], 'w1:p4'),
         ('preview_toggle', 5, [b'p', b'p', b'\r'], 'w1:p1'),
@@ -154,7 +158,7 @@ print(json.dumps({'result': result}))
             assert b'PREVIEW for w1:p1' in output, 'Preview is not visible by default'
             ready_ms = (time.monotonic() - opened_at) * 1000
             calls = call_log.read_text().splitlines()
-            data_calls = [call for call in calls if not call.startswith('pane read ')]
+            data_calls = [call for call in calls if not call.startswith(('pane read ', 'agent get '))]
             assert data_calls in (["api snapshot"], ["agent list", "workspace list", "tab list"]), calls
             assert 'pane read w1:p1 --source recent-unwrapped --lines 30 --format ansi' in calls, calls
             assert not focus_log.exists(), 'Opening the picker changed focus'
@@ -269,6 +273,6 @@ print(json.dumps({'result': result}))
     assert styles.findall(padded_result) == styles.findall(original_padded), 'Padding cleanup changed ANSI styles'
     assert styles.sub('', padded_result) == (
         'PREVIEW for w1:p1\n' + '\n'.join(f'    ROW {number}' if number != 3 else '' for number in range(8))
-        + '\n    한글 들여쓰기\nliteral │\nPADDED_END\n'
+        + '\n    한글 들여쓰기\nliteral │\nliteral ┃\nPADDED_END\n'
     ), repr(padded_result)
     print('PASS: padding cleanup preserves colors, Korean indentation, blank lines and literal pipes')

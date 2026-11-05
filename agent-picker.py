@@ -19,6 +19,7 @@ from agent_completion_times import (
     cache_path, completion_age, completion_timestamp, display_status, load_times, record_event,
 )
 from agent_reminders import alarm_badges, ensure_worker
+from agent_preview import conversation_preview
 
 
 HERDR = os.environ.get("HERDR_BIN_PATH", "herdr")
@@ -54,19 +55,23 @@ def preview(pane_id):
     if not pane_id or pane_id == '@section':
         return
     try:
+        conversation = conversation_preview(pane_id, request)
+        if conversation is not None:
+            sys.stdout.write(conversation)
+            return
         result = subprocess.run(
             [HERDR, 'pane', 'read', pane_id, '--source', 'recent-unwrapped', '--lines', '30', '--format', 'ansi'],
             text=True, capture_output=True, check=True, timeout=3,
         )
-        # Source-terminal right-edge padding otherwise wraps into empty preview rows.
+        # shortcut: trim padded │/┃ edges only; extend for other observed terminal borders.
         text = re.sub(
-            r'[ \t]{2,}((?:\x1b\[[0-9;:]*m)*)│((?:\x1b\[[0-9;:]*m)*)$',
+            r'[ \t]{2,}((?:\x1b\[[0-9;:]*m)*)[│┃]((?:\x1b\[[0-9;:]*m)*)$',
             r'\1\2', result.stdout, flags=re.MULTILINE,
         )
         text = re.sub(r'[ \t]+((?:\x1b\[[0-9;:]*m)*)$', r'\1', text, flags=re.MULTILINE)
         # Let fzf render ANSI styles; stripping ESC leaves visible code fragments.
         sys.stdout.write(text)
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, ValueError, KeyError, RuntimeError, subprocess.SubprocessError):
         print('Preview unavailable')
 
 
@@ -203,7 +208,7 @@ def refresh_action(path):
             return ""
         previous = path.read_text()
         if refresh_rows(path) == previous:
-            return ""
+            return "refresh-preview"
         return f"reload-sync:cat {shlex.quote(str(path))}"
 
 
