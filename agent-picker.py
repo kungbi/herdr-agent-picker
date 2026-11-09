@@ -14,12 +14,12 @@ import sys
 import tempfile
 import time
 import tomllib
+import unicodedata
 
 from agent_completion_times import (
     cache_path, completion_age, completion_timestamp, display_status, load_times, record_event,
 )
 from agent_reminders import alarm_badges, ensure_worker
-from agent_preview import conversation_preview
 
 
 HERDR = os.environ.get("HERDR_BIN_PATH", "herdr")
@@ -55,20 +55,30 @@ def preview(pane_id):
     if not pane_id or pane_id == '@section':
         return
     try:
-        conversation = conversation_preview(pane_id, request)
-        if conversation is not None:
-            sys.stdout.write(conversation)
-            return
+        # Use the agent's own rendering for every kind; never rebuild its Markdown.
         result = subprocess.run(
             [HERDR, 'pane', 'read', pane_id, '--source', 'recent-unwrapped', '--lines', '30', '--format', 'ansi'],
             text=True, capture_output=True, check=True, timeout=3,
         )
-        # shortcut: trim padded │/┃ edges only; extend for other observed terminal borders.
-        text = re.sub(
-            r'[ \t]{2,}((?:\x1b\[[0-9;:]*m)*)[│┃]((?:\x1b\[[0-9;:]*m)*)$',
-            r'\1\2', result.stdout, flags=re.MULTILINE,
-        )
-        text = re.sub(r'[ \t]+((?:\x1b\[[0-9;:]*m)*)$', r'\1', text, flags=re.MULTILINE)
+        styles = re.compile(r'\x1b\[[0-9;:]*m')
+        rows = [(line, styles.sub('', line).rstrip('\r\n'))
+                for line in result.stdout.splitlines(keepends=True)]
+        # A blank framed row identifies the outer edge without confusing table cells.
+        frame_columns = {len(plain) for _, plain in rows if re.fullmatch(r' +[│┃]', plain)}
+        cleaned = []
+        for line, plain in rows:
+            if plain.endswith(('│', '┃')):
+                # shortcut: CJK/combining widths; revisit for joined emoji at the frame edge.
+                columns = sum(0 if unicodedata.category(character) in ('Mn', 'Me', 'Cf') else
+                              2 if unicodedata.east_asian_width(character) in ('W', 'F') else 1
+                              for character in plain)
+                if columns in frame_columns:
+                    line = re.sub(r'([│┃])((?:\x1b\[[0-9;:]*m)*)$', r'\2', line,
+                                  flags=re.MULTILINE)
+            cleaned.append(line)
+        text = re.sub(r'(?:[ \t]|\x1b\[[0-9;:]*m)+$',
+                      lambda match: ''.join(styles.findall(match[0])), ''.join(cleaned),
+                      flags=re.MULTILINE)
         # Let fzf render ANSI styles; stripping ESC leaves visible code fragments.
         sys.stdout.write(text)
     except (OSError, ValueError, KeyError, RuntimeError, subprocess.SubprocessError):

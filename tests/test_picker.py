@@ -47,7 +47,7 @@ elif args[:2] == ['agent', 'focus']:
     Path(os.environ['PICKER_FOCUS_LOG']).write_text(args[2])
     result = {}
 elif args[:2] == ['agent', 'get']:
-    result = {'agent': {'agent': 'claude'}}
+    result = {'agent': {'agent': os.environ.get('PICKER_AGENT_KIND', 'claude')}}
 elif args[:2] == ['pane', 'read']:
     preview_text = 'PREVIEW for ' + args[2]
     if os.environ.get('PICKER_LONG_PREVIEW'):
@@ -80,10 +80,22 @@ print(json.dumps({'result': result}))
     )
     assert preview_result.stdout == '\x1b[38;2;17;203;91mPREVIEW for w1:p1\x1b[0m\n', repr(preview_result.stdout)
     assert preview_calls.read_text().splitlines() == [
-        'agent get w1:p1',
         'pane read w1:p1 --source recent-unwrapped --lines 30 --format ansi',
     ], preview_calls.read_text()
     print('PASS: preview preserves rendered ANSI colors without adding blank lines')
+    for agent_kind in ('codex', 'hermes'):
+        native_calls = root / f'{agent_kind}-native-preview.calls'
+        native_result = subprocess.run(
+            [PYTHON, PICKER, '--preview', 'w1:p1'],
+            env=dict(os.environ, HERDR_BIN_PATH=str(fake), PICKER_CALL_LOG=str(native_calls),
+                     PICKER_AGENT_KIND=agent_kind),
+            text=True, capture_output=True, check=True, timeout=5,
+        )
+        assert native_result.stdout == preview_result.stdout, (agent_kind, native_result.stdout)
+        assert native_calls.read_text().splitlines() == [
+            'pane read w1:p1 --source recent-unwrapped --lines 30 --format ansi',
+        ], native_calls.read_text()
+        print(f'PASS: {agent_kind} uses the same original terminal snapshot')
     record_event({'event': 'pane_agent_status_changed', 'data': {'pane_id': 'w1:p3', 'agent_status': 'done'}}, cache_path(), time.time() - 180)
     history_time = (datetime.now() - timedelta(days=1)).replace(hour=12, minute=0, second=0, microsecond=0)
     record_event({'event': 'pane_agent_status_changed', 'data': {'pane_id': 'w1:p4', 'agent_status': 'done'}}, cache_path(), history_time.timestamp())
