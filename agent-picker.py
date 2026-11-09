@@ -14,7 +14,7 @@ import sys
 import tempfile
 import time
 import tomllib
-from terminal_preview import clean_snapshot, pan_snapshot, read_view, view_action
+from terminal_preview import PREVIEW_LABEL, clean_snapshot, compact_blank_rows, pan_snapshot, read_view, view_action
 
 from agent_completion_times import (
     cache_path, completion_age, completion_timestamp, display_status, load_times, record_event,
@@ -60,7 +60,7 @@ def preview(pane_id, state_path=None):
             [HERDR, 'pane', 'read', pane_id, '--source', 'recent-unwrapped', '--lines', '30', '--format', 'ansi'],
             text=True, capture_output=True, check=True, timeout=3,
         )
-        text = clean_snapshot(result.stdout)
+        text = compact_blank_rows(clean_snapshot(result.stdout))
         state = read_view(state_path)
         if state['offset'] and not state['wrap']:
             text = pan_snapshot(text, state['offset'], int(os.environ.get('FZF_PREVIEW_COLUMNS', '80')), state_path)
@@ -274,7 +274,7 @@ def main():
              "--raw", "--query=!^──", "--with-shell=/bin/sh -c",
              "--delimiter=\t", "--with-nth=2..", "--border=rounded", "--border-label= Agents ",
              "--header=1-9/Enter: focus  Ctrl+D/U: jump  /: search  a/r: alarm  Esc/q: back/close\np: preview  w: wrap  Ctrl+P: width  ←/→: pan  Shift+↑/↓: scroll  Shift+End: live",
-             f"--preview={preview_command}", "--preview-window=right:60%:nowrap:follow", "--preview-label= Preview ",
+             f"--preview={preview_command}", "--preview-window=right:60%:nowrap:follow", f"--preview-label={PREVIEW_LABEL}",
              f"--bind=/:show-input+clear-query+disable-raw+unbind({search_keys})",
              "--bind=p:toggle-preview,q:abort",
              f"--bind=j:down-match,k:up-match,down:down-match,up:up-match,ctrl-j:down-match,ctrl-k:up-match,load:pos({selected_index})+unbind(load)",

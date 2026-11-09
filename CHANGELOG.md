@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Compact consecutive empty preview rows to one separator, preserving ANSI style
+  changes and relative code indentation, so image reserves do not hide context.
+- Explain the text-only preview in its border: `이미지는 Enter로 원본 확인`.
+  Image positions are not exposed by Herdr pane reads; blank space is not treated
+  as proof of an image.
+
 - Remove the common left whitespace gutter without losing ANSI styling, relative
   code indentation, blank lines, literal Markdown or table borders.
 - Start the terminal preview at the latest output with wrapping off; keep

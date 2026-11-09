@@ -102,8 +102,13 @@ matching outer `│`/`┃` and trailing spaces are removed even with zero or sho
 padding. The shared left gutter is removed using only ASCII spaces common to
 all nonblank rows; relative code indentation, blank lines and literal table
 borders remain. Tab-indented content keeps its gutter to avoid changing tab stops.
-ANSI styles, original paragraph breaks and source-side hard
-line breaks are preserved. Literal Markdown is intentionally unchanged.
+ANSI styles, paragraph separators and source-side hard line breaks are preserved;
+consecutive empty rows are compacted to one blank separator. Literal Markdown is
+intentionally unchanged. The preview border says `이미지는 Enter로 원본 확인`:
+Herdr's text snapshot hides image placeholders and provides no image positions,
+so the picker cannot reliably distinguish an image reserve from ordinary blank
+space. It never invents an image at a guessed location. Enter opens the original
+pane, where images remain available.
 
 | Control | Preview action |
 | --- | --- |

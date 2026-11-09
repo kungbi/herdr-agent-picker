@@ -6,6 +6,7 @@ import re
 import unicodedata
 
 STYLES = re.compile(r'\x1b\[[0-9;:]*m')
+PREVIEW_LABEL = ' Preview · 이미지는 Enter로 원본 확인 '
 MAX_OFFSET = 65536
 DEFAULT_STATE = {'offset': 0, 'wrap': False, 'full': False, 'paused': False}
 
@@ -51,6 +52,23 @@ def clean_snapshot(text):
                 remaining -= count
         result.append(''.join(parts))
     return ''.join(result)
+
+
+def compact_blank_rows(text):
+    """Keep one paragraph separator; do not infer image positions from blanks."""
+    output = []
+    blank_rows = 0
+    for line in text.splitlines(keepends=True):
+        plain = STYLES.sub('', line)
+        if not plain.strip(' \t\r\n'):
+            blank_rows += 1
+            # Keep style changes from omitted rows in their original order:
+            # the following text must still inherit exactly the source colors.
+            output.append(''.join(STYLES.findall(line)) if blank_rows > 1 else line)
+        else:
+            blank_rows = 0
+            output.append(line)
+    return ''.join(output)
 
 
 def read_view(path):
@@ -99,12 +117,12 @@ def view_action(path, action):
     if action == 'pause':
         return 'change-preview-label( Paused · Shift+End: live )'
     if action in ('live', 'resume'):
-        return 'change-preview-label( Preview )' + ('+preview-bottom+refresh-preview' if action == 'resume' else '')
+        return f'change-preview-label({PREVIEW_LABEL})' + ('+preview-bottom+refresh-preview' if action == 'resume' else '')
     # fzf caps side previews at 99%; a lower panel is genuinely full-width
     # while retaining a few list rows and the original Enter target above it.
     layout = 'down:80%' if state['full'] else 'right:60%'
     wrapping = 'wrap-word' if state['wrap'] else 'nowrap'
-    return f'change-preview-label( Preview )+change-preview-window({layout}:{wrapping})+refresh-preview'
+    return f'change-preview-label({PREVIEW_LABEL})+change-preview-window({layout}:{wrapping})+refresh-preview'
 
 
 def pan_snapshot(text, offset, columns, state_path=None):

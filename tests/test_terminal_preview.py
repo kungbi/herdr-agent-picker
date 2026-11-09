@@ -48,6 +48,26 @@ class TerminalPreviewTests(unittest.TestCase):
         source = '\x1b[32m    한글  e\u0301    │\x1b[0m\n' + ' ' * len('    ____  e    ') + '│\n'
         self.assertEqual(STYLES.sub('', self.render(source)), '한글  e\u0301\n\n')
 
+    def test_large_blank_gap_is_compacted_without_guessing_image_content(self):
+        source = 'Tool calls\n' + '\n' * 18 + 'Latest answer\n'
+        result = self.render(source)
+        self.assertEqual(result, 'Tool calls\n\nLatest answer\n')
+        self.assertNotIn('[이미지', result)
+
+    def test_blank_compaction_preserves_styles_and_relative_code_indent(self):
+        source = '\x1b[31mheading\n\n\x1b[32m   \n\x1b[0m\n    code\n\nnext\n'
+        result = self.render(source)
+        self.assertEqual(STYLES.sub('', result), 'heading\n\n    code\n\nnext\n')
+        self.assertEqual(STYLES.findall(result), STYLES.findall(source))
+
+    def test_image_notice_does_not_claim_an_image_was_detected(self):
+        from terminal_preview import PREVIEW_LABEL
+        self.assertIn('이미지는 Enter로 원본 확인', PREVIEW_LABEL)
+        with tempfile.TemporaryDirectory() as directory:
+            from terminal_preview import view_action
+            action = view_action(Path(directory) / 'preview.json', 'resume')
+            self.assertIn(PREVIEW_LABEL, action)
+
     def test_pan_cjk_and_combining_keeps_styles_and_cell_boundary(self):
         with tempfile.TemporaryDirectory() as directory:
             state = Path(directory) / 'preview.json'

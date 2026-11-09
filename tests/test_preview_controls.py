@@ -88,6 +88,7 @@ print(json.dumps({'result': result}))
 
     try:
         wait_for(b'LATEST_BOTTOM')
+        wait_for('이미지는 Enter로 원본 확인'.encode())
         assert b'TOP_HIDDEN' not in output, 'Preview did not start at the bottom'
         assert b'LEFT_EDGE' in output
         assert b'FULL_WIDTH_END' not in output, 'Default preview unexpectedly wraps'
@@ -132,6 +133,19 @@ print(json.dumps({'result': result}))
         output.clear()
         wait_for(b'AFTER_REVIEW')
         print('PASS: periodic latest refresh, manual scroll held, Shift+End resumes live updates')
+
+        # Herdr's text-only snapshot loses image placement metadata. Compact
+        # blank reserves, without inventing an image at a guessed position.
+        source.write_text('BEFORE_BLANK_RESERVE\n' + '\n' * 27 + 'AFTER_BLANK_RESERVE\n')
+        output.clear()
+        wait_for(b'AFTER_BLANK_RESERVE')
+        assert b'BEFORE_BLANK_RESERVE' in output, 'Large blank reserve still hides earlier context'
+        # The static border hint was verified on initial draw; fzf does not
+        # redraw an unchanged border when only preview contents refresh.
+        print('PASS: long blank reserves compacted with an honest image hint; real fzf')
+        source.write_text(initial.replace('LATEST_BOTTOM', 'AFTER_REVIEW'))
+        output.clear()
+        wait_for(b'AFTER_REVIEW')
 
         # w/p/r/a/q stay ordinary query characters; left/right stay cursor keys.
         keys(b'/')
