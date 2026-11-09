@@ -96,7 +96,8 @@ print(json.dumps({'result': result}))
             'pane read w1:p1 --source recent-unwrapped --lines 30 --format ansi',
         ], native_calls.read_text()
         print(f'PASS: {agent_kind} uses the same original terminal snapshot')
-    record_event({'event': 'pane_agent_status_changed', 'data': {'pane_id': 'w1:p3', 'agent_status': 'done'}}, cache_path(), time.time() - 180)
+    completed_at = time.time() - 180
+    record_event({'event': 'pane_agent_status_changed', 'data': {'pane_id': 'w1:p3', 'agent_status': 'done'}}, cache_path(), completed_at)
     history_time = (datetime.now() - timedelta(days=1)).replace(hour=12, minute=0, second=0, microsecond=0)
     record_event({'event': 'pane_agent_status_changed', 'data': {'pane_id': 'w1:p4', 'agent_status': 'done'}}, cache_path(), history_time.timestamp())
     record_event({'event': 'pane_agent_status_changed', 'data': {'pane_id': 'w1:p4', 'agent_status': 'idle'}}, cache_path(), history_time.timestamp() + 1)
@@ -121,7 +122,7 @@ print(json.dumps({'result': result}))
         ('preview_move', 5, [b'j', b'\r'], 'w1:p4'),
         ('preview_toggle', 5, [b'p', b'p', b'\r'], 'w1:p1'),
         ('preview_hidden', 5, [b'p', b'j', b'\r'], 'w1:p4'),
-        ('preview_long_line', 5, [b'\r'], 'w1:p1'),
+        ('preview_long_line', 5, [b'w', b'\r'], 'w1:p1'),
         ('select', 5, [b'jkj', b'\r'], 'w1:p4'),
         ('cancel', 5, [b'jkj', b'\x1b'], None),
         ('cross_up', 5, [b'jk', b'\r'], 'w1:p1'),
@@ -147,6 +148,7 @@ print(json.dumps({'result': result}))
         focus_log = root / f'{scenario}.focus'
         call_log = root / f'{scenario}.calls'
         opened_at = time.monotonic()
+        opened_wall = time.time()
         opened_day = datetime.now().date()
         pid, fd = pty.fork()
         if pid == 0:
@@ -175,7 +177,11 @@ print(json.dumps({'result': result}))
             assert 'pane read w1:p1 --source recent-unwrapped --lines 30 --format ansi' in calls, calls
             assert not focus_log.exists(), 'Opening the picker changed focus'
             if count <= 12:
-                assert b'3m ago' in output, 'Completion age is missing'
+                # Long PTY runs can advance the original 3m fixture into 4m;
+                # allow the minute boundary during this popup's startup too.
+                ages = {f'{int(stamp - completed_at) // 60}m ago'.encode()
+                        for stamp in (opened_wall, time.time())}
+                assert any(age in output for age in ages), f'Completion age is missing: {ages}'
                 # Rendering may cross midnight: this fixture then moves from
                 # Yesterday to its ISO date, just as real completion history does.
                 history_labels = {

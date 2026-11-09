@@ -35,6 +35,7 @@ with tempfile.TemporaryDirectory(prefix="herdr-package-test-") as directory:
     subprocess.run(["sh", "-n", str(extracted / "run")], check=True)
     subprocess.run([sys.executable, str(extracted / "tests/test_completion_times.py")], check=True)
     subprocess.run([sys.executable, str(extracted / "tests/test_preview.py")], check=True)
+    subprocess.run([sys.executable, str(extracted / "tests/test_terminal_preview.py")], check=True)
     try:
         build(root / "bad", "v0.0.0-wrong")
     except ValueError:

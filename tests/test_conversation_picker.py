@@ -87,11 +87,11 @@ print(json.dumps({'result': result}))
             content_width = sum(0 if unicodedata.category(character) in ('Mn', 'Me', 'Cf') else
                                 2 if unicodedata.east_asian_width(character) in ('W', 'F') else 1
                                 for character in content)
-            cases = [(framed_snapshot(content + '\n\n', content_width + padding + 1), content + '\n\n')
+            cases = [(framed_snapshot(content + '\n\n', content_width + padding + 1), content[4:] + '\n\n')
                      for padding in (0, 1, 2, 8, 31, 32)]
             literal_table = '│ value' + ' ' * 40 + '│\n    literal ┃\n'
             cases.append((literal_table, literal_table))
-            cases.append(('    code  \x1b[0m  \x1b[31m \x1b[0m\n', '    code\n'))
+            cases.append(('    code  \x1b[0m  \x1b[31m \x1b[0m\n', 'code\n'))
             for source, expected in cases:
                 snapshots.write_text(json.dumps({'w1:p1': source, 'w1:p2': 'SECOND_RESPONSE\n'}))
                 rendered = subprocess.run(
@@ -137,6 +137,10 @@ print(json.dumps({'result': result}))
             assert marker in output, output.decode(errors='replace')[-10000:]
 
         try:
+            wait_for(b'WRAP_END')
+            # Wrapping is opt-in; exercise native colors/markup at narrow widths.
+            output.clear()
+            os.write(fd, b'w')
             wait_for(b'WRAP_END')
             visible = re.sub(rb'\x1b\[[0-?]*[ -/]*[@-~]', b'', output).replace(b'\r', b'')
             assert b'FIRST_RESPONSE' in visible and b'**CODE_LITERAL**' in visible

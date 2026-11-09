@@ -19,7 +19,9 @@ A compact, keyboard-driven agent popup for Herdr.
 - Preview opens automatically on the right, using 60% of the popup width.
   Codex, Hermes and other agents use the same colored terminal snapshot path:
   their own rendered output, not a second Markdown renderer or rebuilt chat.
-  Press `p` outside search to hide or show it.
+  It starts at the latest output without wrapping. Outside search, `w` toggles
+  wrapping, `Ctrl+P` switches to a full-width lower preview and back, and `p`
+  hides or shows it. Left/right arrows pan long lines without wrapping.
   Preview may contain sensitive terminal text; hide it before screen sharing.
 - Press `1`–`9` to focus a numbered item immediately, without Enter.
 - Current Done and Active agents come first, followed by idle completion history by date.
@@ -97,19 +99,50 @@ lookup, saved-conversation header, role reconstruction, or newest-first reversal
 Right-edge frames are detected from a blank framed row and their terminal column,
 counting Korean/wide and combining characters rather than string length. The
 matching outer `│`/`┃` and trailing spaces are removed even with zero or short
-padding; ordinary table borders and leading code indentation stay intact. ANSI
-styles, original paragraph breaks and source-side hard line breaks are preserved.
-fzf wraps the cleaned body to the narrower preview width without resizing the
-source pane. This is a recent terminal snapshot, not a pixel-identical mirror:
-the last 30 source rows can include input/status UI. A snapshot without a blank
-frame reference, complex joined emoji widths, hard-drawn tables and source-side
-truncation are not reconstructed. Literal Markdown already present in the source
-is intentionally unchanged.
+padding. The shared left gutter is removed using only ASCII spaces common to
+all nonblank rows; relative code indentation, blank lines and literal table
+borders remain. Tab-indented content keeps its gutter to avoid changing tab stops.
+ANSI styles, original paragraph breaks and source-side hard
+line breaks are preserved. Literal Markdown is intentionally unchanged.
 
-The visible preview refreshes every second, including when agent status is
-unchanged. Hiding it stops pane reads. A read failure shows `Preview unavailable`;
-Enter still opens the original pane. Previewing never sends input, changes focus,
-resizes the source pane, or acknowledges a reminder. Glow is not used by the picker.
+| Control | Preview action |
+| --- | --- |
+| `p` | Hide/show the preview |
+| `w` | Toggle word wrapping (off by default); reset horizontal pan |
+| `Ctrl+P` | Switch between right 60% and a full-width lower panel (80% height) |
+| `←` / `→` (or `Shift+←` / `Shift+→`) | Pan 8 terminal cells; switch wrapping off |
+| `Shift+↑` / `Shift+↓` | Scroll older/newer rows and pause automatic redraws |
+| `Shift+PageUp` / `Shift+PageDown` | Scroll a preview page and pause automatic redraws |
+| `Shift+End` | Return to latest output and resume live updates |
+
+The first four controls are normal-mode shortcuts: while searching, letters are
+ordinary text and left/right arrows move the query cursor. `Ctrl+P` has its normal
+fzf search-navigation behavior there. Esc restores normal-mode controls.
+Manual keyboard review pauses both list and preview polling so fzf's next refresh
+cannot steal the scroll position. `Shift+End`, selecting another agent, or changing
+wrap/width/pan resumes live updates. The preview border indicates the paused state.
+Mouse scrolling uses fzf's native behavior; use the Shift keys to hold a view across
+refreshes. Horizontal offsets are bounded and clamped to the longest line, with
+ANSI colors, Korean/wide characters and combining marks retained at the left edge.
+Only small view settings are stored in the popup's private temporary directory;
+no terminal text is cached on disk, and the directory is removed on normal close.
+
+This is a recent terminal snapshot, not a pixel-identical mirror: the last 30
+source rows can include input/status UI. A snapshot without a blank frame
+reference, complex joined emoji widths, hard-drawn tables and source-side truncation
+are not reconstructed. Full-width mode changes only the layout inside this popup;
+it never resizes the source pane.
+
+The visible preview starts at the bottom and refreshes every second in live mode,
+including when agent status is unchanged. Hiding it stops pane reads. A read failure
+shows `Preview unavailable`; Enter still opens the original pane. Previewing never
+sends input, changes focus, resizes the source pane, or acknowledges a reminder.
+Glow is not used by the picker.
+
+fzf uses the host terminal's font and cell size; a separate per-preview font size
+is not available. In Ghostty, `Cmd+-` decreases the font size and `Cmd+0` resets it
+for the **whole terminal surface**, including all Herdr panes. The picker never
+changes font settings automatically or modifies global terminal configuration.
 
 ## Reminders
 

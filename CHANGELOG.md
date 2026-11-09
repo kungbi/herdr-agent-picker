@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+- Remove the common left whitespace gutter without losing ANSI styling, relative
+  code indentation, blank lines, literal Markdown or table borders.
+- Start the terminal preview at the latest output with wrapping off; keep
+  one-second live refreshes and allow keyboard scrolling to pause redraws.
+  Shift+End returns to latest output and resumes list/preview polling.
+- Add `w` to toggle wrapping, Ctrl+P for a full-width lower preview versus the
+  right 60% panel, and left/right (or shifted arrows) for cell-aware horizontal
+  panning. Normal-mode shortcuts leave search typing and cursor keys intact.
+- Keep view settings bounded and private to each popup, without caching terminal
+  text or sending input/resizes to source panes. Add real fzf PTY regressions.
+- Document host-terminal font limitations; no font or global configuration changes.
+
 ## 0.1.0-preview.7
 
 - Stabilize terminal tests by waiting for the picker to redraw after dialogs

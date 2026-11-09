@@ -14,7 +14,7 @@ import sys
 import tempfile
 import time
 import tomllib
-import unicodedata
+from terminal_preview import clean_snapshot, pan_snapshot, read_view, view_action
 
 from agent_completion_times import (
     cache_path, completion_age, completion_timestamp, display_status, load_times, record_event,
@@ -51,7 +51,7 @@ def display_title(value):
     )
 
 
-def preview(pane_id):
+def preview(pane_id, state_path=None):
     if not pane_id or pane_id == '@section':
         return
     try:
@@ -60,25 +60,10 @@ def preview(pane_id):
             [HERDR, 'pane', 'read', pane_id, '--source', 'recent-unwrapped', '--lines', '30', '--format', 'ansi'],
             text=True, capture_output=True, check=True, timeout=3,
         )
-        styles = re.compile(r'\x1b\[[0-9;:]*m')
-        rows = [(line, styles.sub('', line).rstrip('\r\n'))
-                for line in result.stdout.splitlines(keepends=True)]
-        # A blank framed row identifies the outer edge without confusing table cells.
-        frame_columns = {len(plain) for _, plain in rows if re.fullmatch(r' +[│┃]', plain)}
-        cleaned = []
-        for line, plain in rows:
-            if plain.endswith(('│', '┃')):
-                # shortcut: CJK/combining widths; revisit for joined emoji at the frame edge.
-                columns = sum(0 if unicodedata.category(character) in ('Mn', 'Me', 'Cf') else
-                              2 if unicodedata.east_asian_width(character) in ('W', 'F') else 1
-                              for character in plain)
-                if columns in frame_columns:
-                    line = re.sub(r'([│┃])((?:\x1b\[[0-9;:]*m)*)$', r'\2', line,
-                                  flags=re.MULTILINE)
-            cleaned.append(line)
-        text = re.sub(r'(?:[ \t]|\x1b\[[0-9;:]*m)+$',
-                      lambda match: ''.join(styles.findall(match[0])), ''.join(cleaned),
-                      flags=re.MULTILINE)
+        text = clean_snapshot(result.stdout)
+        state = read_view(state_path)
+        if state['offset'] and not state['wrap']:
+            text = pan_snapshot(text, state['offset'], int(os.environ.get('FZF_PREVIEW_COLUMNS', '80')), state_path)
         # Let fzf render ANSI styles; stripping ESC leaves visible code fragments.
         sys.stdout.write(text)
     except (OSError, ValueError, KeyError, RuntimeError, subprocess.SubprocessError):
@@ -208,7 +193,11 @@ def refresh_rows(path):
     return content
 
 
-def refresh_action(path):
+def refresh_action(path, state_path=None):
+    # fzf restarts following on each refresh. Freeze redraws during explicit
+    # keyboard review so a timer (or reordered list) cannot steal its scroll.
+    if read_view(state_path)['paused']:
+        return ''
     # Only fetching the ready local file may use fzf's blocking ID tracking.
     # API calls run in a background transform, leaving the visible list usable.
     with path.with_suffix(".lock").open("a") as lock:
@@ -253,20 +242,39 @@ def main():
         cache = Path(directory) / "rows"
         content = "\n".join(rows) + "\n"
         cache.write_text(content)
+        state_path = Path(directory) / 'preview.json'
         reload_command = shlex.join([
-            sys.executable, str(Path(__file__).resolve()), "--refresh", str(cache),
+            sys.executable, str(Path(__file__).resolve()), "--refresh", str(cache), str(state_path),
+        ])
+        control_command = shlex.join([
+            sys.executable, str(Path(__file__).resolve()), '--preview-control', str(state_path),
         ])
         reminder_command = shlex.join([sys.executable, str(Path(__file__).with_name('agent_reminders.py').resolve())])
-        preview_command = shlex.join([sys.executable, str(Path(__file__).resolve()), '--preview']) + ' {1}'
-        search_keys = 'j,k,a,r,p,q,/,1,2,3,4,5,6,7,8,9,ctrl-d,ctrl-u'
+        preview_command = (shlex.join([sys.executable, str(Path(__file__).resolve()), '--preview'])
+                           + ' {1} ' + shlex.quote(str(state_path)))
+        search_keys = 'j,k,a,r,p,w,q,/,1,2,3,4,5,6,7,8,9,ctrl-d,ctrl-u,left,right,shift-left,shift-right,ctrl-p'
+        preview_bindings = [
+            f'--bind={key}:transform:{control_command} {action}'
+            for key, action in (('w', 'wrap'), ('ctrl-p', 'full'), ('left', 'left'),
+                                ('right', 'right'), ('shift-left', 'left'), ('shift-right', 'right'))
+        ]
+        # Pause polling while reviewing older rows. Native fzf follow alone
+        # would otherwise jump back to the bottom at the next one-second tick.
+        preview_bindings += [
+            f'--bind={key}:bg-cancel+transform({control_command} pause)+{action}'
+            for key, action in (('shift-up', 'preview-up'), ('shift-down', 'preview-down'),
+                                ('shift-page-up', 'preview-page-up'), ('shift-page-down', 'preview-page-down'))
+        ]
+        preview_bindings += [f'--bind=shift-end:transform:{control_command} resume',
+                             f'--bind=focus:transform:{control_command} live']
         choice = subprocess.run(
             [FZF, "--ansi", "--color=dark,fg+:-1", "--sync", "--no-input", "--no-sort", "--no-multi", "--layout=reverse",
              "--track", "--id-nth=1",
              # Raw mode displays non-matching section headings; match navigation skips them.
              "--raw", "--query=!^──", "--with-shell=/bin/sh -c",
              "--delimiter=\t", "--with-nth=2..", "--border=rounded", "--border-label= Agents ",
-             "--header=1-9/Enter: focus  Ctrl+D/U: jump  /: search  p: preview  a/r: alarm  Esc: back/close  q: close",
-             f"--preview={preview_command}", "--preview-window=right:60%:wrap-word",
+             "--header=1-9/Enter: focus  Ctrl+D/U: jump  /: search  a/r: alarm  Esc/q: back/close\np: preview  w: wrap  Ctrl+P: width  ←/→: pan  Shift+↑/↓: scroll  Shift+End: live",
+             f"--preview={preview_command}", "--preview-window=right:60%:nowrap:follow", "--preview-label= Preview ",
              f"--bind=/:show-input+clear-query+disable-raw+unbind({search_keys})",
              "--bind=p:toggle-preview,q:abort",
              f"--bind=j:down-match,k:up-match,down:down-match,up:up-match,ctrl-j:down-match,ctrl-k:up-match,load:pos({selected_index})+unbind(load)",
@@ -280,7 +288,7 @@ def main():
              f"--bind=a:execute-silent:{reminder_command} menu {{1}}",
              f"--bind=r:execute-silent:{reminder_command} list",
              "--bind=a:+clear-screen,r:+clear-screen",
-             *number_bindings, *jump_bindings],
+             *number_bindings, *jump_bindings, *preview_bindings],
             input=content, text=True, stdout=subprocess.PIPE, env=environment,
         )
     if choice.returncode in (1, 130):
@@ -297,13 +305,15 @@ def main():
 
 if __name__ == "__main__":
     try:
-        if len(sys.argv) == 3 and sys.argv[1] == "--preview":
-            preview(sys.argv[2])
+        if len(sys.argv) in (3, 4) and sys.argv[1] == "--preview":
+            preview(sys.argv[2], Path(sys.argv[3]) if len(sys.argv) == 4 else None)
+        elif len(sys.argv) == 4 and sys.argv[1] == '--preview-control':
+            sys.stdout.write(view_action(Path(sys.argv[2]), sys.argv[3]))
         elif len(sys.argv) == 3 and sys.argv[1] == "--rows":
             # Keep already-open popups compatible until they are reopened.
             sys.stdout.write(refresh_rows(Path(sys.argv[2])))
-        elif len(sys.argv) == 3 and sys.argv[1] == "--refresh":
-            sys.stdout.write(refresh_action(Path(sys.argv[2])))
+        elif len(sys.argv) in (3, 4) and sys.argv[1] == "--refresh":
+            sys.stdout.write(refresh_action(Path(sys.argv[2]), Path(sys.argv[3]) if len(sys.argv) == 4 else None))
         else:
             sys.exit(main())
     except (OSError, ValueError, KeyError, RuntimeError, subprocess.SubprocessError) as error:
