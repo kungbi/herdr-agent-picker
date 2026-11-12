@@ -131,6 +131,9 @@ Dates and clock times use your computer's local timezone. Invalid dates and past
 times show an error without changing the reservation.
 
 Scheduled reminders appear beside their agent as `[alarm MM-DD HH:MM]`.
+Unread reminders show a red `[!]` immediately after the number, so the marker
+stays visible when the preview narrows the list. Opening the agent with Enter
+clears the marker; closing the picker without opening it leaves the marker.
 
 There is one reminder per agent: setting another replaces it. Press `a` again
 and choose **Cancel current alarm**, or press `r` to list scheduled alarms and

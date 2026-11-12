@@ -19,6 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from agent_completion_times import cache_path, record_event
+from agent_reminders import ReminderStore, current_context
 
 PYTHON = sys.executable
 PICKER = sys.argv[1] if len(sys.argv) > 1 else str(ROOT / 'agent-picker.py')
@@ -37,6 +38,8 @@ if args == ['api', 'snapshot']:
         'workspaces': [{'workspace_id': 'w1', 'label': 'Test workspace'}],
         'tabs': [{'tab_id': 'w1:t1', 'label': 'Test tab'}],
     }}
+    if os.environ.get('PICKER_UNREAD_ALARM'):
+        result['snapshot']['agents'][0]['title'] = 'A very long task title ' * 12
 elif args == ['agent', 'list']:
     result = {'agents': [dict(agent='claude', agent_status=status, workspace_id='w1', tab_id='w1:t1', pane_id=f'w1:p{i}', focused=i == 1, title=f'Agent {i}') for i, status in enumerate(['working', 'blocked', 'done', 'idle', 'unknown'] + ['idle'] * (int(os.environ.get('PICKER_AGENT_COUNT', '5')) - 5), start=1)]}
 elif args == ['workspace', 'list']:
@@ -48,6 +51,8 @@ elif args[:2] == ['agent', 'focus']:
     result = {}
 elif args[:2] == ['agent', 'get']:
     result = {'agent': {'agent': os.environ.get('PICKER_AGENT_KIND', 'claude')}}
+elif args[:2] == ['pane', 'report-metadata']:
+    result = {}
 elif args[:2] == ['pane', 'read']:
     preview_text = 'PREVIEW for ' + args[2]
     if os.environ.get('PICKER_LONG_PREVIEW'):
@@ -72,6 +77,7 @@ print(json.dumps({'result': result}))
     socket_path = root / 'session.sock'
     socket_path.touch()
     os.environ.update(HERDR_SOCKET_PATH=str(socket_path), HERDR_CONFIG_PATH=str(config), HERDR_PLUGIN_STATE_DIR=str(root / 'plugin-state'))
+    store, scope = ReminderStore(), current_context()['scope']
     preview_calls = root / 'colored-preview.calls'
     preview_result = subprocess.run(
         [PYTHON, PICKER, '--preview', 'w1:p1'],
@@ -102,6 +108,8 @@ print(json.dumps({'result': result}))
     record_event({'event': 'pane_agent_status_changed', 'data': {'pane_id': 'w1:p4', 'agent_status': 'idle'}}, cache_path(), history_time.timestamp() + 1)
 
     scenarios = [
+        ('alarm_unread_cancel', 5, [b'q'], None),
+        ('alarm_unread_open', 5, [b'\r'], 'w1:p1'),
         ('preview_padded', 5, [b'\r'], 'w1:p1'),
         ('quit', 5, [b'q'], None),
         ('search_q_text', 5, [b'/', b'Agent2q', b'\r', b'\x7f', b'\r'], 'w1:p2'),
@@ -148,16 +156,23 @@ print(json.dumps({'result': result}))
         call_log = root / f'{scenario}.calls'
         opened_at = time.monotonic()
         opened_day = datetime.now().date()
+        unread_alarm = scenario.startswith('alarm_unread_')
+        if unread_alarm:
+            with store.database(create=True) as database:
+                assert database is not None
+                database.execute('INSERT INTO unread_reminders (scope, pane_id) VALUES (?, ?)', (scope, 'w1:p1'))
         pid, fd = pty.fork()
         if pid == 0:
             environment = os.environ.copy()
             environment.update(TERM='xterm-256color', COLORTERM='truecolor', HERDR_BIN_PATH=str(fake), HERDR_CONFIG_PATH=str(config), PICKER_FOCUS_LOG=str(focus_log), PICKER_CALL_LOG=str(call_log), PICKER_AGENT_COUNT=str(count))
+            if unread_alarm:
+                environment['PICKER_UNREAD_ALARM'] = '1'
             if scenario == 'preview_long_line':
                 environment['PICKER_LONG_PREVIEW'] = '1'
             if scenario == 'preview_padded':
                 environment['PICKER_PADDED_PREVIEW'] = '1'
             os.execve(PYTHON, [PYTHON, PICKER], environment)
-        fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack('HHHH', 24, 100, 0, 0))
+        fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack('HHHH', 24, 72 if unread_alarm else 100, 0, 0))
         output = bytearray()
         deadline = time.monotonic() + 8
         status = None
@@ -168,6 +183,10 @@ print(json.dumps({'result': result}))
                     output.extend(os.read(fd, 65536))
             assert ready_item in output, output.decode(errors='replace')
             assert b'PREVIEW for w1:p1' in output, 'Preview is not visible by default'
+            if unread_alarm:
+                assert b'[!]' in output, 'Unread alarm was clipped by the visible preview'
+                assert re.search(rb'\x1b\[[0-9;]*38;2;255;85;85(?:;[0-9;]*)?m\[!\]', output), 'Unread marker lost its red color'
+                assert store.unread(scope) == {'w1:p1'}, 'Previewing an agent acknowledged its alarm'
             ready_ms = (time.monotonic() - opened_at) * 1000
             calls = call_log.read_text().splitlines()
             data_calls = [call for call in calls if not call.startswith(('pane read ', 'agent get '))]
@@ -263,6 +282,9 @@ print(json.dumps({'result': result}))
                 assert not focus_log.exists(), 'Escape changed focus'
             else:
                 assert focus_log.read_text() == expected, (scenario, focus_log.read_text(), output.decode(errors='replace')[-3000:])
+            if unread_alarm:
+                assert store.unread(scope) == ({'w1:p1'} if expected is None else set())
+                store.acknowledge(scope, 'w1:p1')
             print(f'PASS: {scenario}; ready {ready_ms:.1f} ms; {len(data_calls)} snapshot request(s); real fzf, fake Herdr')
         finally:
             try:

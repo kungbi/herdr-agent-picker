@@ -104,6 +104,9 @@ class ReminderStore:
                         status TEXT NOT NULL DEFAULT 'pending', retry_at REAL NOT NULL DEFAULT 0,
                         attempts INTEGER NOT NULL DEFAULT 0, error TEXT,
                         UNIQUE(scope, pane_id))''')
+                    connection.execute('''CREATE TABLE IF NOT EXISTS unread_reminders (
+                        scope TEXT NOT NULL, pane_id TEXT NOT NULL,
+                        PRIMARY KEY (scope, pane_id))''')
                 yield connection
         finally:
             connection.close()
@@ -132,6 +135,24 @@ class ReminderStore:
             database.execute("DELETE FROM reminders WHERE status='fired' AND due < ?", (now - 7 * 86400,))
         return reminder_id
 
+    def unread(self, scope):
+        with self.database() as database:
+            if database is None:
+                return set()
+            exists = database.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='unread_reminders'").fetchone()
+            if not exists:
+                return set()
+            return {row['pane_id'] for row in database.execute(
+                'SELECT pane_id FROM unread_reminders WHERE scope=?', (scope,))}
+
+    def acknowledge(self, scope, pane_id):
+        with self.database() as database:
+            if database is not None:
+                exists = database.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='unread_reminders'").fetchone()
+                if exists:
+                    return bool(database.execute('DELETE FROM unread_reminders WHERE scope=? AND pane_id=?', (scope, pane_id)).rowcount)
+        return False
+
     def cancel(self, reminder_id):
         with self.database() as database:
             if database is not None:
@@ -143,6 +164,23 @@ def alarm_badges():
         return {item['pane_id']: item['due'] for item in ReminderStore().pending(current_context()['scope'])}
     except (OSError, sqlite3.Error):
         return {}
+
+
+def sync_sidebar(store, context, pane_id):
+    store.root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    environment = os.environ.copy()
+    for name, key in (('HERDR_SOCKET_PATH', 'socket'), ('HERDR_CONFIG_PATH', 'config')):
+        if context[key]:
+            environment[name] = context[key]
+        else:
+            environment.pop(name, None)
+    with (store.root / 'sidebar.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        unread = pane_id in store.unread(context['scope'])
+        action = ['--token', 'picker_alarm_unread=●'] if unread else ['--clear-token', 'picker_alarm_unread']
+        subprocess.run([context['herdr'], 'pane', 'report-metadata', pane_id,
+                        '--source', 'agent-picker', *action], env=environment,
+                       capture_output=True, text=True, check=True, timeout=5)
 
 
 def notify(reminder):
@@ -176,11 +214,18 @@ def process_due(store, now=None, deliver=notify):
     for reminder in store.pending():
         if reminder['status'] != 'pending' or max(reminder['due'], reminder['retry_at']) > now:
             continue
-        with store.database() as database:
+        with store.database(create=True) as database:
             claimed = database.execute("UPDATE reminders SET status='delivering' WHERE id=? AND status='pending'",
                                        (reminder['id'],)).rowcount
+            if claimed and not reminder['attempts']:
+                database.execute('INSERT OR IGNORE INTO unread_reminders (scope, pane_id) VALUES (?, ?)',
+                                 (reminder['scope'], reminder['pane_id']))
         if not claimed:
             continue
+        try:
+            sync_sidebar(store, json.loads(reminder['context']), reminder['pane_id'])
+        except (OSError, ValueError, KeyError, sqlite3.Error, subprocess.SubprocessError) as error:
+            print(f'Alarm sidebar: {error}', file=sys.stderr)
         try:
             deliver(reminder)
         except Exception as error:

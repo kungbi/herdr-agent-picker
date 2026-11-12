@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from agent_reminders import ReminderStore, notify, parse_time, process_due
+from agent_reminders import ReminderStore, notify, parse_time, process_due, sync_sidebar
 from reminder_dialog import DateTimeForm
 
 now = datetime(2026, 10, 23, 14, 30).timestamp()
@@ -109,6 +109,11 @@ with tempfile.TemporaryDirectory(prefix='herdr-reminder-test-') as directory:
         raise RuntimeError('Temporary notification failure')
 
     process_due(store, 1200, fail)
+    assert store.unread('session-a') == {'p1'}
+    store.acknowledge('session-b', 'p1')
+    assert store.unread('session-a') == {'p1'}
+    store.acknowledge('session-a', 'p1')
+    assert store.unread('session-a') == set()
     item = store.pending()[0]
     assert item['retry_at'] == 1260 and item['attempts'] == 1 and item['error']
     process_due(store, 1259, delivered.append)
@@ -116,6 +121,16 @@ with tempfile.TemporaryDirectory(prefix='herdr-reminder-test-') as directory:
     process_due(store, 1260, delivered.append)
     process_due(store, 2000, delivered.append)
     assert len(delivered) == 1 and store.pending() == [], 'Notification was duplicated'
+    assert store.unread('session-a') == set(), 'Retry must not recreate an acknowledged alert'
+    store.schedule('p1', 'New alarm', 2100, context, now=2000)
+    process_due(store, 2100, delivered.append)
+    assert store.unread('session-a') == {'p1'}, 'New alarm should become unread'
+    with patch('agent_reminders.subprocess.run') as run:
+        sync_sidebar(store, context, 'p1')
+        assert run.call_args.args[0][-2:] == ['--token', 'picker_alarm_unread=●']
+        store.acknowledge('session-a', 'p1')
+        sync_sidebar(store, context, 'p1')
+        assert run.call_args.args[0][-2:] == ['--clear-token', 'picker_alarm_unread']
     with patch('agent_reminders.subprocess.run') as run, patch('agent_reminders.sys.platform', 'darwin'):
         run.return_value = subprocess.CompletedProcess([], 0)
         notify(dict(delivered[0], title='Quotes " and $(literal)'))

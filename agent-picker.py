@@ -9,6 +9,7 @@ from pathlib import Path
 import re
 import shlex
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -19,7 +20,7 @@ import unicodedata
 from agent_completion_times import (
     cache_path, completion_age, completion_timestamp, display_status, load_times, record_event,
 )
-from agent_reminders import alarm_badges, ensure_worker
+from agent_reminders import ReminderStore, alarm_badges, current_context, ensure_worker, sync_sidebar
 
 
 HERDR = os.environ.get("HERDR_BIN_PATH", "herdr")
@@ -157,6 +158,10 @@ def render_rows():
     number = 0
     times = load_times(cache_path())
     alarms = alarm_badges()
+    try:
+        unread = ReminderStore().unread(current_context()['scope'])
+    except (OSError, sqlite3.Error):
+        unread = set()
     now = time.time()
     selected_index = 2
     for heading, items in date_sections(agents, times, now):
@@ -186,8 +191,9 @@ def render_rows():
             if agent['pane_id'] in alarms:
                 due = datetime.fromtimestamp(alarms[agent['pane_id']])
                 alarm_label = f" \033[38;2;255;184;108m[alarm {due:%m-%d %H:%M}]\033[39m"
+            unread_label = "\033[38;2;255;85;85m[!]\033[39m " if agent['pane_id'] in unread else ''
             rows.append(
-                f"{agent['pane_id']}\t{number_label}{status_label(agent['agent_status'])} "
+                f"{agent['pane_id']}\t{number_label}{unread_label}{status_label(agent['agent_status'])} "
                 f"{age_label}"
                 f"\033[1m{title}\033[22m "
                 f"\033[2m· {location}{agent_label}\033[22m{alarm_label}"
@@ -291,6 +297,12 @@ def main():
     if not separator or not pane_id or pane_id == "@section":
         raise RuntimeError("Invalid agent selection")
     request("agent", "focus", pane_id)
+    try:
+        store, context = ReminderStore(), current_context()
+        if store.acknowledge(context['scope'], pane_id):
+            sync_sidebar(store, context, pane_id)
+    except (OSError, sqlite3.Error, subprocess.SubprocessError) as error:
+        print(f"Could not acknowledge alarm: {error}", file=sys.stderr)
     record_event({"event": "pane.focused", "data": {"pane_id": pane_id}}, cache_path(), time.time())
     return 0
 
