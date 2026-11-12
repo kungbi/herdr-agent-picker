@@ -1,0 +1,20 @@
+{
+  "document": {"margin": 0},
+  "heading": {"color": "#bd93f9", "bold": true, "block_suffix": "\n"},
+  "strong": {"color": "#ffb86c", "bold": true},
+  "emph": {"italic": true},
+  "strikethrough": {"crossed_out": true},
+  "block_quote": {"indent": 1, "indent_token": "│ ", "color": "#8be9fd"},
+  "list": {"level_indent": 2},
+  "item": {"block_prefix": "• "},
+  "enumeration": {"block_prefix": ". "},
+  "task": {"ticked": "[✓] ", "unticked": "[ ] "},
+  "hr": {"format": "────────", "color": "#6272a4"},
+  "link": {"color": "#8be9fd", "underline": true},
+  "link_text": {"bold": true},
+  "image": {"color": "#8be9fd"},
+  "image_text": {"format": "Image: {{.text}} → "},
+  "code": {"color": "#f1fa8c"},
+  "code_block": {"margin": 1, "theme": "dracula"},
+  "table": {"center_separator": "┼", "column_separator": "│", "row_separator": "─"}
+}

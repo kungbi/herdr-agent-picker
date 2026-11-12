@@ -37,6 +37,21 @@ jobs:
           mkdir -p "$RUNNER_TEMP/fzf-bin"
           tar -xzf "$RUNNER_TEMP/fzf.tar.gz" -C "$RUNNER_TEMP/fzf-bin"
           echo "$RUNNER_TEMP/fzf-bin" >> "$GITHUB_PATH"
+      - name: Install Glow 2.1.2
+        shell: bash
+        run: |
+          case "$(uname -s):$(uname -m)" in
+            Linux:x86_64) platform=Linux_x86_64; checksum=6063d4f2af8a82a5f4bba0831e165de9381660aa8b41df4816d0106a265b07d5 ;;
+            Darwin:arm64) platform=Darwin_arm64; checksum=6f7abfb47de69fbf7b0e67d2fa019cc554916e8b6694f9877212be89fc7ebb8c ;;
+            Darwin:x86_64) platform=Darwin_x86_64; checksum=8cbc78a4947c68e804edf34d36070153fcc5d424873152da83ad6be14fa88ed3 ;;
+            *) exit 1 ;;
+          esac
+          curl --fail --location --retry 3 "https://github.com/charmbracelet/glow/releases/download/v2.1.2/glow_2.1.2_${platform}.tar.gz" -o "$RUNNER_TEMP/glow.tar.gz"
+          python -c 'import hashlib,sys; assert hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest() == sys.argv[2]' "$RUNNER_TEMP/glow.tar.gz" "$checksum"
+          mkdir -p "$RUNNER_TEMP/glow-bin"
+          tar -xzf "$RUNNER_TEMP/glow.tar.gz" -C "$RUNNER_TEMP/glow-bin" --strip-components=1
+          "$RUNNER_TEMP/glow-bin/glow" --version
+          echo "$RUNNER_TEMP/glow-bin" >> "$GITHUB_PATH"
       - name: Run regression and packaging tests
         run: sh ./run test
         env:

@@ -1,10 +1,14 @@
 """Conversation safety, bounds and identity tests using only synthetic data."""
 
 import json
+import os
 from pathlib import Path
+import shutil
 import sqlite3
+import subprocess
 import sys
 import tempfile
+import unicodedata
 import unittest
 from unittest.mock import patch
 
@@ -247,6 +251,85 @@ class PreviewTests(unittest.TestCase):
                 'HERMES_HOME': '/a path/profiles/work',
                 'HERMES_TUI_ACTIVE_SESSION_FILE': '/a path/active.json',
             })
+
+
+class MarkdownPreviewTests(unittest.TestCase):
+    def render(self, text, columns=40):
+        with patch.dict(os.environ, {'FZF_PREVIEW_COLUMNS': str(columns)}):
+            return preview.render_messages([{'role': 'assistant', 'content': text}])
+
+    @unittest.skipUnless(shutil.which('glow'), 'glow is not installed')
+    def test_headings_emphasis_quotes_and_code_are_rendered(self):
+        text = '## 미리보기 제목\n\n**핵심 강조**와 `code`\n\n> 예시 인용\n\n```python\nif ready:\n    print("**literal**")\n```'
+        result = self.render(text)
+        plain = preview.ANSI.sub('', result)
+        for marker in ('## ', '**핵심 강조**', '`code`', '```', '> 예시 인용'):
+            self.assertNotIn(marker, plain)
+        for text in ('미리보기 제목', '핵심 강조', 'code', '예시 인용', 'if ready:', '    print("**literal**")'):
+            self.assertIn(text, plain)
+        for line in plain.splitlines():
+            self.assertEqual(line, line.rstrip())
+        heading = next(line for line in result.splitlines() if '미리보기 제목' in preview.ANSI.sub('', line))
+        self.assertRegex(heading, r'\x1b\[(?:95|38;2;189;147;249);1m')
+        self.assertNotIn('\x1b', preview.ANSI.sub(lambda match: '' if match[0].endswith('m') else match[0], result))
+
+    @unittest.skipUnless(shutil.which('glow'), 'glow is not installed')
+    def test_korean_wrap_uses_preview_columns_and_has_no_padded_blank_rows(self):
+        text = '**중요** 한글 단어를 읽기 좋게 유지합니다. ' * 5 + '\n\n마지막 문단'
+        for columns in (24, 38, 72):
+            result = self.render(text, columns).split('ASSISTANT\x1b[0m\n', 1)[1]
+            plain = preview.ANSI.sub('', result)
+            self.assertIn('마지막 문단', plain)
+            for line in plain.splitlines():
+                width = sum(0 if unicodedata.combining(character) else
+                            2 if unicodedata.east_asian_width(character) in 'WF' else 1 for character in line)
+                self.assertLessEqual(width, columns)
+                self.assertEqual(line, line.rstrip())
+
+    @unittest.skipUnless(shutil.which('glow'), 'glow is not installed')
+    def test_unclosed_fence_cannot_swallow_next_message(self):
+        result = preview.render_messages([
+            {'role': 'assistant', 'content': '```python\nprint("incomplete")'},
+            {'role': 'user', 'content': '**NEXT_MESSAGE**'},
+        ])
+        plain = preview.ANSI.sub('', result)
+        self.assertIn('print("incomplete")', plain)
+        self.assertIn('USER', plain)
+        self.assertIn('NEXT_MESSAGE', plain)
+        self.assertNotIn('**NEXT_MESSAGE**', plain)
+
+    def test_missing_glow_keeps_readable_plain_preview(self):
+        with patch.object(shutil, 'which', return_value=None), patch.object(preview.subprocess, 'run') as run:
+            result = self.render('## Original\n\n**body**')
+        self.assertIn('## Original\n\n**body**', result)
+        run.assert_not_called()
+
+    def test_failed_renderer_falls_back_once_without_leaking_error(self):
+        for error in (OSError('PRIVATE_PATH'), subprocess.TimeoutExpired('glow', 0.5),
+                      subprocess.CalledProcessError(1, 'glow', stderr='PRIVATE_ERROR')):
+            with self.subTest(error=type(error).__name__), patch.object(shutil, 'which', return_value='/glow'), \
+                    patch.object(preview.subprocess, 'run', side_effect=error) as run:
+                result = preview.render_messages([
+                    {'role': 'assistant', 'content': '**first**'},
+                    {'role': 'user', 'content': 'second'},
+                ])
+            self.assertIn('**first**', result)
+            self.assertIn('second', result)
+            self.assertNotIn('PRIVATE_', result)
+            self.assertEqual(run.call_count, 1)
+
+    def test_renderer_receives_stdin_and_only_safe_output_is_forwarded(self):
+        rendered = subprocess.CompletedProcess([], 0, '\x1b[1mHeading\x1b[0m  \n   \n\x1b]52;c;PRIVATE_CLIPBOARD\x07tail\n')
+        with patch.object(shutil, 'which', return_value='/glow'), \
+                patch.object(preview.subprocess, 'run', return_value=rendered) as run:
+            result = self.render('## PRIVATE_INPUT', 38)
+        command = run.call_args.args[0]
+        self.assertNotIn('PRIVATE_INPUT', ' '.join(command))
+        self.assertEqual(run.call_args.kwargs['input'], '## PRIVATE_INPUT')
+        self.assertEqual(command[command.index('--width') + 1], '38')
+        self.assertIn('\x1b[1mHeading\x1b[0m\n\ntail', result)
+        self.assertNotIn('PRIVATE_CLIPBOARD', result)
+        self.assertNotIn('\x1b]', result)
 
 
 if __name__ == '__main__':

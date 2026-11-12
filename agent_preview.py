@@ -2,8 +2,10 @@
 
 from contextlib import closing
 import json
+import os
 from pathlib import Path
 import re
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -160,9 +162,29 @@ def content_text(content, cut):
     return safe_text(text) + ('\n[Message truncated]' if cut else '')
 
 
+def render_markdown(text, renderer, columns):
+    result = subprocess.run(
+        [renderer, '--style', str(Path(__file__).with_name('preview-style.json')),
+         '--width', str(columns), '--preserve-new-lines', '-'],
+        input=text, text=True, capture_output=True, check=True, timeout=0.5,
+        env=dict(os.environ, TERM='xterm-256color', COLORTERM='truecolor', NO_COLOR='',
+                 CLICOLOR_FORCE='1', GLOW_PAGER='false', GLOW_TUI='false', GLOW_DEBUG='false'),
+    )
+    # Only renderer-created colors survive; clipboard/link/cursor controls do not.
+    rendered = ANSI.sub(lambda match: match[0] if re.fullmatch(r'\x1b\[[0-9;:]*m', match[0]) else '', result.stdout)
+    rendered = re.sub(r'[ \t](?:[ \t]|\x1b\[[0-9;:]*m)*$',
+                      lambda match: re.sub(r'[ \t]', '', match[0]), rendered, flags=re.MULTILINE)
+    return rendered.strip('\n') or text
+
+
 def render_messages(messages):
     blocks = ['\x1b[38;2;189;147;249mSaved conversation · newest first\x1b[0m']
     colors = {'user': '80;250;123', 'assistant': '139;233;253', 'tool': '255;184;108'}
+    renderer = shutil.which('glow')
+    try:
+        columns = max(1, int(os.environ.get('FZF_PREVIEW_COLUMNS', '80')))
+    except ValueError:
+        columns = 80
     for message in messages:
         role = message['role']
         text = content_text(message.get('content'), message.get('content_cut'))
@@ -174,6 +196,12 @@ def render_messages(messages):
             text += ('\n' if text else '') + 'Calling: ' + calls
         if not text.strip():
             continue
+        if renderer and role != 'tool':
+            try:
+                # Separate messages so an unfinished code fence cannot consume the next role.
+                text = render_markdown(text, renderer, columns)
+            except (OSError, subprocess.SubprocessError):
+                renderer = None
         blocks.append(f'\x1b[1;38;2;{colors[role]}m{role.upper()}\x1b[0m\n{text}')
     if len(blocks) == 1:
         blocks.append('No saved messages yet.')
