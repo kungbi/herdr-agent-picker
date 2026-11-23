@@ -160,9 +160,10 @@ fn keeps_preview_viewport(origin: &str) {
     });
     assert!(!has(&screen.preview(), "ROW_01"));
 
+    let bottom = screen.preview();
     picker.send(&b"\x1b[1;2A".repeat(5));
     wait_screen(&fixture, &mut picker, &mut screen, |rows| {
-        !has(rows, "ROW_30") && has(rows, "ROW_12")
+        !has(rows, "ROW_30") && rows.iter().any(|row| !bottom.contains(row))
     });
     let end = Instant::now() + Duration::from_millis(300);
     while Instant::now() < end {
