@@ -75,9 +75,10 @@ compile during hooks/popup startup. Rebuild after changing Rust source.
 
 Extract the matching `.tar.gz` or `.zip` package to a permanent directory and
 follow Local installation below. Check it against its `SHA256SUMS-<target>` file.
-Source archives include Rust code plus Python build/test tooling, without a
-prebuilt binary. `herdr plugin install` from a source Git ref also requires the
-build step; automatic source compilation during installation is not assumed.
+Source archives include Rust code, native integration tests and the Python
+packaging tool, without a prebuilt binary. `herdr plugin install` from a source
+Git ref also requires the build step; automatic source compilation during
+installation is not assumed.
 
 ## Local installation
 
@@ -252,6 +253,7 @@ model metadata separated by ` · `, preserving model names mentioned in task tex
 ```sh
 cargo fmt --check
 cargo check --locked
+cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked
 sh ./run build
 sh ./run check
@@ -260,14 +262,15 @@ sh ./run package
 sh ./run package --source
 ```
 
-`run test` builds and tests Rust, then uses Python 3.11+ as a PTY/SQLite fixture
-harness around the compiled Rust binary and real fzf. Set `PYTHON` to select the
-build/test interpreter; Python is never a plugin runtime dependency. To test a
-specific native build directly:
+`cargo test --locked` discovers every unit, integration, real-fzf PTY and package
+check. `sh ./run test` forwards to that same command. Install fzf 0.73.1, system
+SQLite development libraries, `gzip`, `unzip`, and Python 3.11+ for the production
+packaging tool. There are no Python tests or fixtures. The Rust packaging tests
+invoke `scripts/build_package.py`, the sole Python exception; `PYTHON` selects
+its interpreter. With dependencies already cached, run everything offline:
 
 ```sh
-HERDR_AGENT_PICKER_TEST_BINARY="$PWD/target/release/herdr-agent-picker" \
-  python3.11 tests/run_rust_regressions.py
+CARGO_NET_OFFLINE=true cargo test --locked
 ```
 
 Fixtures use synthetic agents, an isolated state directory and fake Herdr
@@ -281,10 +284,11 @@ preview resizing/releasing and forced preview-process death. Notification argume
 construction and retry/acknowledgement logic have native unit coverage; actual OS
 notification presentation and real Herdr attachment are not automated here.
 
-The former Python runtime and its Python-only unit tests were removed. Neither
-`cargo test` nor the explicitly enumerated regression suite can silently fall
-back to them. `agent_preview.py` was unused by the baseline picker and is not
-part of the port.
+The [scenario parity map](docs/scenario-parity.md) inventories every former
+Python scenario and assertion. The fake Herdr is a Cargo test target, so it is
+never installed or shipped in native packages. Extracted source is typechecked
+without recursive Cargo calls; PTY cases serialize within each suite for stable
+latency checks. See [validation details](docs/rust-port-validation.md).
 
 Python packaging tooling creates deterministic `.tar.gz`/`.zip` archives and
 per-target checksums in `dist/`, using explicit allowlists. Local settings,

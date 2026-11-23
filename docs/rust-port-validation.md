@@ -1,112 +1,123 @@
-# Rust port validation
+# Native Rust validation
 
-Validated on 2026-11-23 in the existing `feat/rust-port` worktree, based on
-`0569c4816bf812af3d5a0b4c03bd9299a158d9ef`. No commit, push, merge, installation,
-or live Herdr pane operation was performed.
+The entire former `tests/*.py` integration/regression harness and its fake Herdr
+are now native Rust integration targets discovered by `cargo test --locked`.
+The [scenario parity audit](scenario-parity.md) was captured before removing the
+Python files and links each original scenario and assertion to its replacement.
+The committed composer implementation is unchanged by this harness migration.
 
-Environment: macOS 26.5.2, arm64; rustc/cargo 1.94.1; fzf 0.73.1;
-Python 3.14.4 for test/package tooling. All Cargo resolution/builds used cached
-crates offline. There are five direct dependencies: libc, regex, serde_json,
-sha2 and unicode-width. SQLite uses the system library with owned statements,
-parameter binding, explicit transactions and a three-second busy timeout.
+## Running the checks
 
-## Runtime delivered
+Requirements: Rust, fzf 0.73.1, system SQLite development libraries, `gzip`,
+`unzip`, and Python 3.11+ for the real production packaging tool only. On Debian/
+Ubuntu, the system packages are `libsqlite3-dev`, `gzip` and `unzip`; macOS ships
+the SQLite library and archive utilities. Set `PYTHON` if packaging needs a
+specific interpreter. No Python tests, fixtures or embedded fixture scripts exist.
+`scripts/build_package.py` is the sole Python exception: Rust packaging tests
+invoke that production tool and independently inspect its results.
 
-- Rust implements the picker, search/keyboard bindings, background fzf reloads,
-  ANSI terminal previews, completion event hooks, reminders, detached worker and
-  overlaid terminal dialogs. Runtime callbacks invoke this same native executable.
-- Completion SHA-256 identities, legacy cache fallback, event spellings, pending
-  idle completion acknowledgement, ordering and local date groups are retained.
-- The original SQLite tables/columns, scope identity, stored delivery contexts,
-  replacement/cancellation, unread state, metadata tokens and retries are retained.
-  Reminder management still lists pending reminders across scopes.
-- Preview attachments use the measured fzf grid and never request takeover,
-  terminal input, split resizing or focus. A detached Rust guard holds the preview
-  lock until attachment teardown/reaping. Pipe EOF also releases an attachment
-  when the preview process is forcibly killed.
-- The launcher uses a packaged executable or the checkout's release build. Hooks
-  and popups never compile or invoke Python. Python runtime files and Python-only
-  runtime unit tests were removed; the unused saved-conversation renderer was
-  not part of the baseline picker's active path.
-- Packaging emits target-specific native archives and a separate source archive.
-  CI is wired to native Rust checks, real fzf and packaging on macOS/Linux.
-
-## Exact checks
-
-These commands passed in the checkout:
+With locked dependencies already cached:
 
 ```sh
+export CARGO_NET_OFFLINE=true
 cargo fmt --check
-cargo check --offline --locked
-cargo test --offline --locked
-cargo clippy --offline --locked --all-targets -- -D warnings
-sh ./run build --offline
-HERDR_AGENT_PICKER_TEST_BINARY="$PWD/target/release/herdr-agent-picker" \
-  CARGO_NET_OFFLINE=true sh ./run test
-sh ./run package --tag v0.1.0-preview.7
-sh ./run package --source --tag v0.1.0-preview.7
-(cd dist && shasum -a 256 -c SHA256SUMS-aarch64-apple-darwin)
-(cd dist && shasum -a 256 -c SHA256SUMS-source)
+cargo check --locked
+cargo clippy --locked --all-targets -- -D warnings
+cargo test --locked
+cargo build --release --locked
 sh -n run
 git diff --check
 ```
 
-Native unit tests: **13 passed**, including a separate process with the
-America/New_York timezone for DST/calendar checks. Coverage includes completion
-transitions and stale events, dates/ordering, TOML sort-setting forms, title
-metadata, ANSI cleanup, reminder replacement/scopes/retries/acknowledgement,
-notification argument construction and sidebar context/token commands.
+`sh ./run test` forwards directly to `cargo test --locked`, including additional
+Cargo arguments. Cargo supplies the application binary path to tests, with no
+prebuilt release requirement. All eight integration suites run by default;
+none is ignored. To filter a suite from a clean checkout, first build all test
+targets so its Rust fake is available:
 
-The explicit Python harness executes **75 real-fzf PTY scenarios against the
-release Rust executable**:
+```sh
+cargo test --locked --no-run
+cargo test --locked --test composer paste
+cargo test --locked --test live_picker slow_navigation
+```
 
-| Suite | PTY scenarios | Evidence |
-| --- | ---: | --- |
-| Picker | 41 | Search/Escape, numbers, headings, jumps, ANSI, focus/unread semantics |
-| Live list | 14 | Cursor identity, empty/removed agents, failed/recovered reloads, input during 1.5s API delay |
-| Native preview | 3 | 72/100/160 columns, Codex/Hermes parity, wrapping, periodic updates, hiding |
-| Preview lifecycle | 4 | Switch/hide/show/close, resize, interrupt, attach failure, read failure |
-| Reminder dialogs | 13 | Presets, custom dates, cancellation, manager, resize, delayed raw-mode input and worker shutdown |
+The integration target `fake_herdr` has `harness = false`; its no-argument Cargo
+invocation exits successfully, and fixture RPC invocations implement the fake.
+It is not a `[[bin]]`, is never installed by Cargo and is excluded from native
+archives. Source archives include its Rust source and the full harness.
 
-Additional native CLI fixture checks cover hook/cache migration and permissions,
-server restart isolation, `open`/`check`/unknown commands, invalid preview sizes,
-forced preview SIGKILL cleanup, failed attachment spawn, and real worker recovery,
-singleton ownership and exit. No fixture sends a desktop notification.
+## Behavior and isolation
 
-Packaging tests compare repeated archive bytes and exact allowlisted contents,
-check modes/checksums/tag rejection, reject scripts posing as native binaries,
-launch the extracted executable with invalid Python settings, and run offline
-`cargo check` on extracted Rust source. Mach-O inspection confirms the release
-binary links system SQLite/System/iconv, with no Python runtime.
+The native harness covers 41 picker PTY scenarios, 14 mutable-list scenarios,
+21 composer scenarios, 13 reminder dialogs, three conversation widths, two
+viewport cases, four attachment lifecycle cases and nine origin-capture cases.
+Additional direct checks cover preview formatting, fixture compatibility,
+CLI/hooks, native process death and lock cleanup, SQLite worker recovery and
+singleton ownership, packaging rejection and deterministic archives.
 
-The active regression helper rejects script executables and prints the native
-binary path under test. It imports no former runtime modules. Historical event
-and SQLite helpers only seed synthetic state; Rust assertions and subprocesses
-provide runtime coverage. Test temporary directories and final logs are under
-`target/test-tmp` and `target/test-results` in this checkout.
+Each case gets fresh isolated socket/config/state/home paths. The fixture removes
+inherited Herdr/fzf settings and fake control flags before applying its own
+environment. The native fake records argv, rejects unexpected commands and
+never invokes real Herdr or notification services. Reminder fixtures schedule
+only future alarms and explicitly cancel rows and wait for worker lock release.
+SQLite fixtures use independent system-library calls and the original schema.
 
-Two inherited harness timing issues were fixed: output draining is bounded even
-while fzf animates, and exiting after the final key has its own deadline instead
-of reusing the popup-opening deadline. A fresh completion-age fixture is seeded
-for each popup so slow runs cannot invalidate a hardcoded three-minute age.
+Cases serialize within each integration executable, including fixture setup, so
+completion ages are fresh and slow-snapshot input latency assertions measure the
+application rather than competing terminal tests. The 700 ms input and two-second
+exit deadlines during a 1.5-second API delay are retained. Process waits, output
+draining and cleanup are bounded. Failed PTY cases kill/reap their process group;
+attachment guard tests also require detached process death and lock availability.
+Failed fixture directories are retained under `target/test-tmp` for diagnosis.
 
-## Artifacts and remaining verification limits
+Preview scrolling checks decode completed terminal frames and examine the actual
+preview cells across idle/growing/rolling/replaced snapshots. Conversation tests
+retain ANSI sequences, Korean and combining text, literal tables, indentation,
+blank rows and all three widths. Composer checks pin pane/PID/session/terminal
+identity, preserve literal argv, reject unsafe paste and multiline bursts, and
+require one delivery attempt on partial failure or timeout.
 
-`dist/` contains `.tar.gz` and `.zip` packages for `aarch64-apple-darwin` and for
-`source`, with corresponding `SHA256SUMS-*` files. The native package contains no
-Python runtime or Python dependency. Source test/build tools need Python 3.11+.
-Archive reproducibility is verified for identical input files; this does not
-claim bit-for-bit compiler reproducibility across hosts.
+## Package verification
 
-- Linux and other CPU architectures were not built/executed locally: only the
-  aarch64 macOS Rust target is installed here. Linux CI is configured, but was
-  not triggered. A Linux binary is not included in the local `dist/` output.
-- Real Herdr server attachment, desktop notification presentation and sound were
-  not exercised. Tests use fake Herdr executables and synthetic terminal/state
-  fixtures, as required to avoid real panes and notifications.
-- The small config reader extracts `ui.agent_panel_sort` from table, dotted,
-  quoted/escaped-key and inline-table forms. It does not perform general TOML
-  validation of unrelated settings; malformed config may be tolerated where
-  Python's former `tomllib` reader would reject the entire file.
-- Source preview limitations remain: complex joined emoji widths and terminal
-  content without a blank outer-frame reference are not reconstructed.
+```sh
+sh ./run package
+sh ./run package --source
+(cd dist && shasum -a 256 -c SHA256SUMS-aarch64-apple-darwin)
+(cd dist && shasum -a 256 -c SHA256SUMS-source)
+```
+
+Use the checksum filename for the actual host target. Rust tests compare both
+native and source tar.gz/zip outputs byte for byte across two builds, inspect
+independent exact member allowlists, every effective payload, timestamps, modes,
+ownership, checksums and ZIP CRCs. The extracted native launcher runs with Python
+settings pointing to nonexistent paths. Source typechecking uses `rustc` with
+the dependency rlibs Cargo already built; tests never start Cargo recursively.
+A standalone offline Cargo check of the extracted source is also part of local
+final verification, after the outer test command has completed.
+
+Archive reproducibility means identical archives for identical inputs. It does
+not claim identical compiler outputs across hosts. Native archives contain only
+the production executable, launcher, manifests and documentation. Source archives
+contain the native tests and production packaging tool, with no built helper,
+local caches, sockets, state, settings or target directories.
+
+## Validation environment and limits
+
+On 2026-11-23, the default offline run passed **18 unit tests and all 120 native
+integration tests**, with no ignored checks. Formatting, check, all-target clippy
+with warnings denied, release build, shell syntax and diff whitespace checks
+passed. Native/source archive checksums, ZIP integrity and the extracted native
+launcher also passed. The runner's Cargo argument forwarding was checked with a
+native identity test filter.
+
+Local validation uses macOS arm64, rustc/cargo 1.94.1, fzf 0.73.1 and cached dependencies offline.
+CI runs the same default Cargo suite, formatting, check, clippy and release build
+on macOS and Linux. Dependency/fzf provisioning occurs before offline validation
+in CI. Linux CI is configured; it has not been triggered from this checkout.
+No commit, push, merge, tag, release or global installation is part of validation.
+
+Real Herdr attachment and desktop notification presentation/sound remain outside
+these synthetic tests. The existing preview limitations for complex joined emoji
+widths and terminal content without a blank outer-frame reference are unchanged.
+The small config reader extracts `ui.agent_panel_sort` and does not generally
+validate unrelated TOML settings.

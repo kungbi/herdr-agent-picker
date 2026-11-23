@@ -32,22 +32,27 @@ jobs:
             *) exit 1 ;;
           esac
           curl --fail --location --retry 3 "https://github.com/junegunn/fzf/releases/download/v0.73.1/fzf-0.73.1-${platform}.tar.gz" -o "$RUNNER_TEMP/fzf.tar.gz"
-          python -c 'import hashlib,sys; assert hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest() == sys.argv[2]' "$RUNNER_TEMP/fzf.tar.gz" "$checksum"
+          printf '%s  %s\n' "$checksum" "$RUNNER_TEMP/fzf.tar.gz" | shasum -a 256 -c -
           mkdir -p "$RUNNER_TEMP/fzf-bin"
           tar -xzf "$RUNNER_TEMP/fzf.tar.gz" -C "$RUNNER_TEMP/fzf-bin"
           echo "$RUNNER_TEMP/fzf-bin" >> "$GITHUB_PATH"
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Cache locked dependencies
+        run: cargo fetch --locked
       - name: Native Rust checks
+        env:
+          CARGO_NET_OFFLINE: 'true'
         run: |
           cargo fmt --check
           cargo check --locked
+          cargo clippy --locked --all-targets -- -D warnings
           cargo test --locked
-          cargo build --locked
-      - name: Real-fzf Rust regressions
-        run: python tests/run_rust_regressions.py
       - name: Build native release
+        env:
+          CARGO_NET_OFFLINE: 'true'
         run: cargo build --release --locked
       - name: Package native release
         shell: bash
