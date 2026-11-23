@@ -119,6 +119,11 @@ fn reminder_picker(scenario: &str) {
         "{positions:?}"
     );
 
+    if scenario == "delayed_jk" {
+        pty.send(b"i");
+        pty.drain(Duration::from_millis(100));
+        assert!(!pty.text().contains("Input stopped:"));
+    }
     if scenario == "resize" {
         pty.clear();
         pty.resize(20, 100);

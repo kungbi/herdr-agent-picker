@@ -4,7 +4,7 @@ use serde_json::{json, Value};
 use std::{
     env,
     fs::{self, OpenOptions},
-    io::{self, Write},
+    io::{self, Read, Write},
     os::unix::fs::PermissionsExt,
     path::Path,
     sync::atomic::{AtomicBool, Ordering},
@@ -92,7 +92,7 @@ fn main() {
         ["agent", "list"] => json!({"agents":snapshot(&mode,&d)["agents"]}),
         ["workspace", "list"] => json!({"workspaces":snapshot(&mode,&d)["workspaces"]}),
         ["tab", "list"] => json!({"tabs":snapshot(&mode,&d)["tabs"]}),
-        ["agent", "focus"] if mode != "composer" => {
+        ["agent", "focus"] if mode != "interactive" => {
             assert_eq!(args.len(), 3);
             fs::write(file("FOCUS"), &args[2]).unwrap();
             json!({})
@@ -102,13 +102,13 @@ fn main() {
                 eprintln!("identity lookup unavailable");
                 std::process::exit(1);
             }
-            if mode == "composer" {
+            if mode == "interactive" {
                 json!({"agent":d["agents"].as_array().unwrap().iter().find(|a|a["pane_id"]==args[2]).cloned()})
             } else {
                 json!({"agent":{"agent":env::var("PICKER_AGENT_KIND").unwrap_or_else(|_| if mode == "reminder" { "demo".into() } else { "claude".into() })}})
             }
         }
-        ["pane", "process-info"] if mode == "composer" => {
+        ["pane", "process-info"] if mode == "interactive" => {
             assert_eq!(args.len(), 4);
             assert_eq!(args[2], "--pane");
             let pane = &args[3];
@@ -122,18 +122,6 @@ fn main() {
             };
             json!({"process_info":{"pane_id":pane,"shell_pid":10,"foreground_process_group_id":pid,"foreground_processes":[{"pid":pid,"name":if shell{"zsh"}else{"claude"},"argv":["/bin/claude"]}]}})
         }
-        ["agent", "prompt"] if mode == "composer" => {
-            assert_eq!(args.len(), 5);
-            assert_eq!(args[3], "--");
-            if d["timeout"].as_bool() == Some(true) {
-                std::thread::sleep(Duration::from_secs(5));
-            }
-            if d["send_error"].as_bool() == Some(true) {
-                eprintln!("simulated partial delivery");
-                std::process::exit(1);
-            }
-            json!({})
-        }
         ["pane", "get"] => {
             log("EVENTS", &format!("get {}", args[2]));
             if flag("FAIL_ATTACH_SPAWN") {
@@ -143,10 +131,10 @@ fn main() {
                 )
                 .unwrap();
             }
-            json!({"pane":{"terminal_id":args[2]}})
+            json!({"pane":{"terminal_id": if mode == "interactive" { d["agents"].as_array().unwrap().iter().find(|a| a["pane_id"] == args[2]).map(|a| a["terminal_id"].clone()).unwrap_or(Value::Null) } else { json!(args[2]) }}})
         }
         ["terminal", "attach"] => {
-            assert_eq!(args.len(), 3, "no takeover/input allowed");
+            assert_eq!(args.len(), 3, "no takeover allowed");
             let pane = &args[2];
             let mut size = std::mem::MaybeUninit::<libc::winsize>::zeroed();
             unsafe {
@@ -175,9 +163,50 @@ fn main() {
                 libc::signal(libc::SIGINT, stop as *const () as usize);
             }
             print!("\x1b[2J");
+            if mode == "interactive" && d["malicious"] == true {
+                print!(
+                    "\x1b[1;1HLEFT_CORRUPTED\x1b]52;c;ZmFrZQ==\x07\x1bPignored\x1b\\\x1b[?1049h"
+                );
+            }
             io::stdout().flush().unwrap();
+            if mode == "interactive" {
+                let mut term: libc::termios = unsafe { std::mem::zeroed() };
+                unsafe {
+                    libc::tcgetattr(0, &mut term);
+                    libc::cfmakeraw(&mut term);
+                    libc::tcsetattr(0, libc::TCSANOW, &term);
+                }
+                fs::write(Path::new(&file("DATA")).with_file_name("received"), []).unwrap();
+            }
             while !STOP.load(Ordering::Relaxed) {
-                std::thread::sleep(Duration::from_millis(10));
+                if mode == "interactive" {
+                    if data()["end_attach"] == true {
+                        break;
+                    }
+                    let mut p = libc::pollfd {
+                        fd: 0,
+                        events: libc::POLLIN,
+                        revents: 0,
+                    };
+                    if unsafe { libc::poll(&mut p, 1, 10) } > 0 {
+                        let mut bytes = [0; 4096];
+                        let n = io::stdin().read(&mut bytes).unwrap_or(0);
+                        if n == 0 {
+                            break;
+                        }
+                        let path = Path::new(&file("DATA")).with_file_name("received");
+                        OpenOptions::new()
+                            .append(true)
+                            .open(path)
+                            .unwrap()
+                            .write_all(&bytes[..n])
+                            .unwrap();
+                        print!("\x1b[1;1Hfixture response");
+                        io::stdout().flush().unwrap();
+                    }
+                } else {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
             }
             log("EVENTS", &format!("release {pane}"));
             if flag("RELEASED") {
@@ -200,7 +229,7 @@ fn main() {
                     || args[3..] == ["--format", "ansi"]
             );
             log("EVENTS", &format!("read {}", args[2]));
-            if flag("FAIL_READ") {
+            if flag("FAIL_READ") || d["read_error"] == true {
                 std::process::exit(1);
             }
             if flag("SNAPSHOTS") {
@@ -209,6 +238,21 @@ fn main() {
                 print!("{}", map[&args[2]].as_str().unwrap());
             } else if flag("CONTENT") {
                 print!("{}", fs::read_to_string(file("CONTENT")).unwrap());
+            } else if mode == "interactive" {
+                let path = Path::new(&file("DATA")).with_file_name("received");
+                let received = fs::read(path).unwrap_or_default();
+                if d["long_preview"] == true {
+                    for i in 0..30 {
+                        println!("PREVIOUS_ROW_{i:02}");
+                    }
+                    println!("LIVE ready");
+                }
+                if d["long_preview"] != true || !received.is_empty() {
+                    println!("LIVE {}", String::from_utf8_lossy(&received));
+                }
+                if d["malicious"] == true {
+                    print!("\x1b[1;1HLEFT_CORRUPTED\x1b]52;c;ZmFrZQ==\x07\x1bPignored\x1b\\\x1b[?1049h");
+                }
             } else if mode == "resize" {
                 println!("\x1b[32mSCREEN_{}\x1b[0m", args[2]);
             } else if mode == "runtime" {
@@ -240,7 +284,7 @@ fn main() {
             }
             return;
         }
-        ["pane", "report-metadata"] if mode != "composer" => json!({}),
+        ["pane", "report-metadata"] if mode != "interactive" => json!({}),
         ["plugin", "pane"] if mode == "runtime" => {
             assert_eq!(
                 args,

@@ -1,15 +1,16 @@
 # Python harness → native Cargo parity audit
 
 Inventory captured from every `tests/*.py` file before deletion on 2026-11-23.
-The 41 picker, 14 live-list, 21 composer, 13 reminder, three conversation-width,
+The 41 picker, 14 live-list, 13 reminder, three conversation-width,
 two viewport, four lifecycle and nine origin scenarios retain their individual
-Rust test names. Detailed assertion inventories:
+Rust test names. The composer was subsequently replaced with direct terminal input;
+its obsolete draft/send assertions were intentionally removed. Detailed inventories:
 
 | Former file | Native target | Assertion inventory |
 | --- | --- | --- |
 | `test_picker.py` | `tests/picker.rs` (45 tests) | [Picker inventory](parity-picker.md): all 41 PTY scenarios plus ANSI/newline, Codex/Hermes original snapshots, padded exact text/style checks |
 | `test_live_picker.py` | `tests/live_picker.rs` (14 tests) | [Live inventory](parity-picker.md): each reload, selection and latency assertion |
-| `test_composer.py` | `tests/composer.rs` (21 tests) | [Composer inventory](parity-dialogs.md): exact argv, pinned identity, editing/paste safety and failure assertions |
+| `test_composer.py` (superseded) | `tests/interactive.rs` | [Direct input inventory](parity-dialogs.md): immediate raw bytes, pinned identity, right-side painting, failure and cleanup assertions |
 | `test_reminder_picker.py` | `tests/reminder_picker.rs` (13 tests) | [Reminder inventory](parity-dialogs.md): each preset/custom/dialog/SQLite/worker assertion |
 | `test_conversation_picker.py` | `tests/conversation_picker.rs` (4 tests) | [Conversation inventory](parity-preview.md): padding cases and all three widths |
 | `test_preview_resize.py` | `tests/preview_resize.rs` (15 tests) | [Preview inventory](parity-preview.md): current painted cells, scroll, follow, resizing, ownership and cleanup assertions |
@@ -77,9 +78,9 @@ state/config/socket/home paths and remove inherited Herdr/fzf identity settings.
 
 The Rust fake preserves all old response/error/delay/content modes and logs
 complete argv as JSON. Preview size, attachment PID and release events are
-recorded. It accepts only enumerated synthetic commands, validates prompt/read/
-attach argv, and rejects all other commands, including notifications and terminal
-input. The fake is an explicitly declared Cargo **example target**, built on
+recorded. It accepts only enumerated synthetic commands, validates read/
+attach argv, and rejects all other commands, including notifications and prompt submission. Direct-input cases receive raw
+bytes on the synthetic terminal-attach PTY and compare them byte for byte. The fake is an explicitly declared Cargo **example target**, built on
 first fixture use with offline, locked Cargo in a separate shared target
 directory. Tests read its executable path from Cargo's JSON artifact output,
 independent of test executable layout and cached artifact timestamps. Filtered

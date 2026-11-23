@@ -5,7 +5,8 @@ are now native Rust integration suites and a fixture example used by
 `cargo test --locked`.
 The [scenario parity audit](scenario-parity.md) was captured before removing the
 Python files and links each original scenario and assertion to its replacement.
-The committed composer implementation is unchanged by this harness migration.
+The former composer is superseded by direct PTY input; see the updated
+[interactive preview inventory](parity-dialogs.md).
 
 ## Running the checks
 
@@ -38,7 +39,7 @@ none is ignored. Filter a suite directly from a clean checkout; its Rust fake
 builds automatically on first use:
 
 ```sh
-cargo test --locked --test composer paste
+cargo test --locked --test interactive bracketed_paste
 cargo test --locked --test live_picker slow_navigation
 ```
 
@@ -56,7 +57,7 @@ source and the full harness.
 ## Behavior and isolation
 
 The native harness covers 41 picker PTY scenarios, 14 mutable-list scenarios,
-21 composer scenarios, 13 reminder dialogs, three conversation widths, two
+29 direct interactive preview scenarios, 13 reminder dialogs, three conversation widths, two
 viewport cases, four attachment lifecycle cases and nine origin-capture cases.
 Additional direct checks cover preview formatting, fixture compatibility,
 CLI/hooks, native process death and lock cleanup, SQLite worker recovery and
@@ -80,9 +81,9 @@ Failed fixture directories are retained under `target/test-tmp` for diagnosis.
 Preview scrolling checks decode completed terminal frames and examine the actual
 preview cells across idle/growing/rolling/replaced snapshots. Conversation tests
 retain ANSI sequences, Korean and combining text, literal tables, indentation,
-blank rows and all three widths. Composer checks pin pane/PID/session/terminal
-identity, preserve literal argv, reject unsafe paste and multiline bursts, and
-require one delivery attempt on partial failure or timeout.
+blank rows and all three widths. Interactive preview checks pin pane/PID/session/terminal identity, prove raw byte
+delivery before Enter, preserve paste/control/UTF-8 bytes, decode left/right
+painted cells and require visible closed failures and attachment cleanup.
 
 ## Package verification
 
@@ -112,12 +113,39 @@ local caches, sockets, state, settings or target directories.
 
 ## Validation environment and limits
 
-On 2026-11-23, the default offline run passed **18 unit tests and all 120 native
-integration tests**, with no ignored checks. Formatting, check, all-target clippy
-with warnings denied, release build, shell syntax and diff whitespace checks
-passed. Native/source archive checksums, ZIP integrity and the extracted native
-launcher also passed. The runner's Cargo argument forwarding was checked with a
-native identity test filter.
+The direct-input revision runs these exact local checks with cached dependencies:
+
+```sh
+cargo fmt --check
+cargo check --locked --offline
+cargo clippy --locked --offline --all-targets -- -D warnings
+cargo test --locked --offline
+cargo build --release --locked --offline
+sh -n run
+git diff --check
+sh ./run --version
+```
+
+The expected inventory is **17 unit tests and 128 integration tests**, including
+29 direct-input cases, 45 picker cases, 14 live-list cases, 15 preview cases,
+13 reminder cases, four conversation checks, six runtime checks and two package
+checks. The package test checks native/source determinism, exact effective
+contents, checksums, extracted launcher execution and extracted-source compilation.
+The release binary is rebuilt in `target/release/herdr-agent-picker`, which this
+linked checkout's `run` selects (there is no packaged `bin/` override).
+
+Changed files for this revision:
+
+- Application: `src/interaction.rs` (new), `src/picker.rs`, `src/preview.rs`,
+  `src/dialog.rs`, `src/main.rs`; removed `src/composer.rs`.
+- Regression fixtures: `tests/interactive.rs` (new), `tests/common/mod.rs`,
+  `tests/support/fake_herdr.rs`, `tests/preview_resize.rs`, `tests/reminder_picker.rs`,
+  `tests/package.rs`;
+  removed `tests/composer.rs`. The terminal-screen decoder was moved into shared
+  test support so interactive and viewport tests use the same painted-cell model.
+- Packaging/launcher: `scripts/build_package.py`, `run`.
+- Documentation: `README.md`, `CHANGELOG.md`, `docs/parity-dialogs.md`,
+  `docs/parity-preview.md`, `docs/scenario-parity.md`, `docs/rust-port-validation.md`.
 
 Local validation uses macOS arm64, rustc/cargo 1.94.1, fzf 0.73.1 and cached dependencies offline.
 CI runs the same default Cargo suite, formatting, check, clippy and release build
@@ -134,7 +162,9 @@ runtime `CARGO_TARGET_DIR` pointed elsewhere. These checks exercise relocation
 and stale-artifact handling without changing coverage or lint levels.
 
 Real Herdr attachment and desktop notification presentation/sound remain outside
-these synthetic tests. The existing preview limitations for complex joined emoji
+these synthetic tests. A disposable Herdr 0.9.5 server was attempted with isolated
+home/config/socket paths; this sandbox rejected startup with `Operation not
+permitted`, so no live user server or pane was contacted. The existing preview limitations for complex joined emoji
 widths and terminal content without a blank outer-frame reference are unchanged.
 The small config reader extracts `ui.agent_panel_sort` and does not generally
 validate unrelated TOML settings.

@@ -22,7 +22,7 @@ case "$mode" in
         exec cargo test --locked "$@"
         ;;
     package) exec "$(tool_python)" "$plugin_root/scripts/build_package.py" "$@" ;;
-    picker|record|alarms|check|worker|menu|list|--version|--preview|--live-preview|--rows|--refresh|--compose) ;;
+    picker|record|alarms|check|worker|menu|list|--version|--preview|--live-preview|--rows|--refresh|--interact) ;;
     *) printf 'Unknown command: %s\n' "$mode" >&2; exit 2 ;;
 esac
 if [ -x "$plugin_root/bin/herdr-agent-picker" ]; then

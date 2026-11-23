@@ -15,7 +15,68 @@ use std::{
 };
 use unicode_width::UnicodeWidthChar;
 
+// Only printable text, line breaks/tabs and SGR may reach fzf. In particular,
+// OSC/DCS payloads, cursor movement, queries and alternate-screen controls must
+// never reach the real terminal (even if pane read returns unexpected escapes).
+fn sanitize(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = String::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == 27 {
+            let start = i;
+            i += 1;
+            match bytes.get(i) {
+                Some(b'[') => {
+                    i += 1;
+                    while i < bytes.len() && !(0x40..=0x7e).contains(&bytes[i]) {
+                        i += 1;
+                    }
+                    if i < bytes.len() {
+                        i += 1;
+                        if bytes[i - 1] == b'm'
+                            && bytes[start + 2..i - 1]
+                                .iter()
+                                .all(|b| b.is_ascii_digit() || b";:".contains(b))
+                        {
+                            out.push_str(&text[start..i]);
+                        }
+                    }
+                }
+                Some(b']' | b'P' | b'X' | b'^' | b'_') => {
+                    i += 1;
+                    while i < bytes.len() && bytes[i] != 7 && !bytes[i..].starts_with(b"\x1b\\") {
+                        i += 1;
+                    }
+                    if i < bytes.len() {
+                        i += if bytes[i] == 7 { 1 } else { 2 };
+                    }
+                }
+                Some(_) => {
+                    while i < bytes.len() && (0x20..=0x2f).contains(&bytes[i]) {
+                        i += 1;
+                    }
+                    // A malformed escape may precede UTF-8: do not split it.
+                    if i < bytes.len() && bytes[i].is_ascii() {
+                        i += 1;
+                    }
+                }
+                None => (),
+            }
+        } else {
+            let c = text[i..].chars().next().unwrap();
+            if !c.is_control() || matches!(c, '\n' | '\t') {
+                out.push(c);
+            }
+            i += c.len_utf8();
+        }
+    }
+    out
+}
+
 pub fn clean(text: &str) -> String {
+    let sanitized = sanitize(text);
+    let text = sanitized.as_str();
     let styles = Regex::new(r"\x1b\[[0-9;:]*m").unwrap();
     let blank = Regex::new(r"^ +[│┃]$").unwrap();
     let edge = Regex::new(r"[│┃]((?:\x1b\[[0-9;:]*m)*)$").unwrap();
@@ -281,6 +342,12 @@ fn attach(terminal: &str, lock: &File, columns: u16, lines: u16) -> Result<Attac
             Ok(())
         });
     }
+    let flags = unsafe { libc::fcntl(master.as_raw_fd(), libc::F_GETFL) };
+    if flags < 0
+        || unsafe { libc::fcntl(master.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0
+    {
+        return Err(std::io::Error::last_os_error().into());
+    }
     let child = command.spawn()?;
     drop(read);
     Ok(Attachment {
@@ -303,6 +370,7 @@ fn live_inner(pane: &str, path: &Path, origin: &str) -> Result<()> {
         return Ok(());
     }
     let mut stream = SnapshotStream::default();
+    let mut input = crate::interaction::Input::new(path)?;
     // Unknown origin is deliberately read-only too: guessing could resize the
     // visible pane. Keep the lock so a previous attachment is reaped first.
     if origin.is_empty() || pane == origin {
@@ -312,7 +380,8 @@ fn live_inner(pane: &str, path: &Path, origin: &str) -> Result<()> {
             }
             let end = Instant::now() + Duration::from_secs(1);
             while Instant::now() < end && !stopped() {
-                std::thread::sleep(Duration::from_millis(100));
+                input.update(pane, None, None)?;
+                std::thread::sleep(Duration::from_millis(25));
             }
         }
         return Ok(());
@@ -343,20 +412,32 @@ fn live_inner(pane: &str, path: &Path, origin: &str) -> Result<()> {
             }
         }
     }
+    let mut refresh = Instant::now();
     while !stopped() {
-        if !stream.refresh(pane)? {
-            return Ok(());
+        if attached.child.try_wait()?.is_some() {
+            return Err("Terminal attachment ended".into());
         }
-        let end = Instant::now() + Duration::from_secs(1);
-        while Instant::now() < end && !stopped() {
-            if attached.child.try_wait()?.is_some() {
+        input.update(pane, Some(terminal), Some(&mut attached.master))?;
+        if Instant::now() >= refresh {
+            if !stream.refresh(pane)? {
+                return Err("Preview read failed; input stopped".into());
+            }
+            refresh = Instant::now()
+                + if input.active() {
+                    Duration::from_millis(100)
+                } else {
+                    Duration::from_secs(1)
+                };
+        }
+        if poll(attached.master.as_raw_fd(), 20) {
+            let n = attached.master.read(&mut bytes)?;
+            if n == 0 {
                 return Err("Terminal attachment ended".into());
             }
-            if poll(attached.master.as_raw_fd(), 100) {
-                let n = attached.master.read(&mut bytes)?;
-                if n == 0 {
-                    return Err("Terminal attachment ended".into());
-                }
+            // Drain the attachment, never replay terminal control sequences to
+            // the picker. Herdr's sanitized snapshots go through fzf's grid.
+            if input.active() {
+                refresh = Instant::now();
             }
         }
     }
@@ -367,14 +448,28 @@ pub fn live(pane: &str, path: &Path, origin: &str) {
         return;
     }
     signals();
-    if live_inner(pane, path, origin).is_err() && !stopped() {
-        println!("Preview unavailable");
+    if let Err(error) = live_inner(pane, path, origin) {
+        if stopped() {
+            return;
+        }
+        println!("Preview unavailable: {}", label(&error.to_string()));
         let _ = std::io::stdout().flush();
     }
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn snapshot_escape_allowlist_confines_output() {
+        assert_eq!(
+            sanitize("한글\x1b[2J\x1b[1;1Htext\x1b[?1049h\x1b]52;c;secret\x07\x1bPpayload\x1b\\\x1b^payload\x1b\\\x1b[38;2;1;2;3m色\x1b[0m\n\t\r\x00\x08\u{009b}"),
+            "한글text\x1b[38;2;1;2;3m色\x1b[0m\n\t"
+        );
+        for tail in ["\x1b", "\x1b[1;", "\x1b]unfinished", "\x1bPunfinished"] {
+            assert_eq!(sanitize(&format!("safe{tail}")), "safe");
+        }
+        assert_eq!(sanitize("\x1b한글"), "한글");
+    }
     #[test]
     fn live_snapshot_deltas() {
         let mut stream = SnapshotStream::default();

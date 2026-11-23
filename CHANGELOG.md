@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Replace the line composer with direct raw terminal input in the right preview.
+- Keep fzf painting through a PTY relay; pin and revalidate the target, sanitize
+  snapshot escapes, stop visibly on attachment/identity failures and keep Esc local.
+- Preserve current/unknown-origin resize protection; update native PTY regressions
+  and source packaging for the interaction module.
+
+
 ## 0.2.0
 
 - Press `i` in the picker to write to the selected agent, `Enter` to send, or `Esc` to cancel. The recipient is rechecked before sending.

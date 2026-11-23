@@ -18,11 +18,11 @@ COMMON = ('LICENSE', 'README.md', 'CHANGELOG.md', 'herdr-plugin.toml', 'run',
           'docs/images/agent-picker-preview.png', 'docs/images/agent-picker-alarm.png')
 SOURCE = ('Cargo.toml', 'Cargo.lock', 'scripts/build_package.py',
           'tests/common/mod.rs', 'tests/support/fake_herdr.rs',
-          'tests/runtime.rs', 'tests/picker.rs', 'tests/live_picker.rs', 'tests/composer.rs',
+          'tests/runtime.rs', 'tests/picker.rs', 'tests/live_picker.rs', 'tests/interactive.rs',
           'tests/preview_resize.rs', 'tests/conversation_picker.rs',
           'tests/reminder_picker.rs', 'tests/package.rs', '.github/workflows/preview.yml',
           'src/main.rs', 'src/config.rs', 'src/util.rs', 'src/completion.rs', 'src/picker.rs',
-          'src/preview.rs', 'src/reminders.rs', 'src/dialog.rs', 'src/composer.rs', 'src/sqlite.rs')
+          'src/preview.rs', 'src/reminders.rs', 'src/dialog.rs', 'src/interaction.rs', 'src/sqlite.rs')
 
 
 def host_target():
