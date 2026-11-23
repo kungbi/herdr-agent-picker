@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+.DS_Store
+*.tar.gz
+dist/
+*.sqlite3
+*.sqlite3-*
+reminders-worker.*
+
+/target/
+/bin/

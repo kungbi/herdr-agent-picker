@@ -1,0 +1,39 @@
+#!/bin/sh
+set -eu
+plugin_root=$(CDPATH= cd "$(dirname "$0")" && pwd)
+mode=${1:-picker}
+if [ "$#" -gt 0 ]; then shift; fi
+tool_python() {
+    if [ -n "${PYTHON:-}" ]; then printf '%s\n' "$PYTHON"; return; fi
+    for candidate in python3.14 python3.13 python3.12 python3.11 python3; do
+        if command -v "$candidate" >/dev/null 2>&1 && "$candidate" -c 'import sys; sys.exit(sys.version_info < (3, 11))'; then
+            command -v "$candidate"
+            return
+        fi
+    done
+    printf '%s\n' 'Build/test packaging tools require Python 3.11 or newer.' >&2
+    return 1
+}
+case "$mode" in
+    open) exec "${HERDR_BIN_PATH:-herdr}" plugin pane open --plugin agent-picker --entrypoint picker ;;
+    build) exec cargo build --release --locked --manifest-path "$plugin_root/Cargo.toml" "$@" ;;
+    test)
+        cd "$plugin_root"
+        cargo test --locked
+        cargo build --locked
+        export HERDR_AGENT_PICKER_TEST_BINARY="${HERDR_AGENT_PICKER_TEST_BINARY:-$plugin_root/target/debug/herdr-agent-picker}"
+        exec "$(tool_python)" tests/run_rust_regressions.py "$@"
+        ;;
+    package) exec "$(tool_python)" "$plugin_root/scripts/build_package.py" "$@" ;;
+    picker|record|alarms|check|worker|menu|list|--version|--preview|--live-preview|--rows|--refresh) ;;
+    *) printf 'Unknown command: %s\n' "$mode" >&2; exit 2 ;;
+esac
+if [ -x "$plugin_root/bin/herdr-agent-picker" ]; then
+    binary="$plugin_root/bin/herdr-agent-picker"
+elif [ -x "$plugin_root/target/release/herdr-agent-picker" ]; then
+    binary="$plugin_root/target/release/herdr-agent-picker"
+else
+    printf '%s\n' 'Build Agent Picker with: sh ./run build (or extract a native release package).' >&2
+    exit 1
+fi
+exec "$binary" "$mode" "$@"
