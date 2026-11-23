@@ -29,7 +29,7 @@ The viewport assertions inspect committed terminal frames and restrict row match
 | `popup-only` | Popup focus without context produces read-only previews for both rows. |
 | `origin-read-failure` | Failed native p2 read paints the unavailable message without get or attach fallback. |
 
-All nine scenarios prohibit p2 get/attach and popup attach, and prohibit all get/attach before native polling except for the initial p1 attachment in `origin-not-selected`. Successful p2 previews refresh without status changes and render `SCREEN_p2`. Resize and show trigger additional reads, with no get or attach while native preview is active. Hiding allows an in-flight read to settle and then stops reads for 1.3 seconds. Switching to p1 keeps read-only behavior when the origin is unresolved. With a resolved origin, p1 attaches at matching dimensions and remains the other pane when a refreshed snapshot reports its focus and changed title. Switching back to p2 reaps the p1 attachment, orders release before the latest p2 read, and continues to refresh p2 without attachment. Returning to p1 again attaches, and closing reaps it. Every scenario closes successfully, emits no unexpected fake commands, and stops polling after close.
+All nine scenarios prohibit p2 get/attach and popup attach, and prohibit all get/attach before native polling except for the initial p1 attachment in `origin-not-selected`. Successful p2 previews refresh without status changes and render `SCREEN_p2`. Resize and show trigger additional reads, with no get or attach while native preview is active. Hiding allows an in-flight read to settle and then stops reads for 1.3 seconds. Switching to p1 keeps read-only behavior when the origin is unresolved. With a resolved origin, p1 attaches at matching dimensions and remains the other pane when a refreshed snapshot reports its focus and changed title. Switching back to p2 reaps the p1 attachment, orders release before the latest p2 read, and continues to refresh p2 without attachment. The changed label is painted before issuing the next navigation key, avoiding a backend-read/UI-reload race. Returning to p1 again attaches, and closing reaps it. Every scenario closes successfully, emits no unexpected fake commands, and stops polling after close.
 
 ## Native conversation rendering
 
@@ -40,3 +40,14 @@ All nine scenarios prohibit p2 get/attach and popup attach, and prohibit all get
 | Direct Hermes and Codex previews at 72, 100, and 160 columns | Both direct previews exit successfully, preserve the exact native unstyled content and source ANSI sequence order, and keep the source line count. |
 | Real picker at 72, 100, and 160 columns | fzf renders the wrap terminator, first response, literal code markup, Korean text, and original truecolor sequence. Saved-conversation and assistant transcript labels are absent. The picker closes successfully without changing focus and calls only snapshot, read, get, and attach. |
 | Real picker updates at 100 columns | Changed content appears without moving the selection. Moving down shows the second response. Hiding stops reads after a settling period, and showing picks up content changed while hidden. The picker remains alive after resizing to 72 columns. |
+
+## Direct input extension
+
+The existing read-only/origin, viewport, attachment lifecycle and conversation
+checks remain. `tests/interactive.rs` adds direct raw input through the same
+preview attachment while a separate fzf PTY continues rendering. Input mode pins
+list reloads and revalidates terminal/session/foreground identity before delivery.
+Standalone Esc is local; unsafe/busy/unavailable/protected previews fail visibly
+without fallback. See the [interactive inventory](parity-dialogs.md). Snapshot
+sanitization removes cursor/alternate-screen/OSC/DCS commands while retaining
+SGR. Attachment stream escapes never reach the outer terminal.

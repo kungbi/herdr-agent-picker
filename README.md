@@ -23,8 +23,8 @@ output are synthetic; no live Herdr sessions or notifications were used.
   navigate results and Enter to focus. Esc clears the search and returns to normal
   navigation without closing the picker, even with an empty query or no matches.
   Press Esc or `q` in normal mode to close; while searching, `q` and `i` are ordinary text.
-- Press `i` in normal mode to compose a one-line message to the selected agent.
-  The bottom row shows the captured recipient; Enter sends, Esc cancels.
+- Press `i` in normal mode to type directly into the selected agent in the right preview.
+  Keys go straight to that terminal; standalone Esc returns locally.
 - Preview opens automatically on the right, using 60% of the popup width.
   Codex, Hermes and other agents use the same colored terminal snapshot path:
   their own rendered output, not a second Markdown renderer or rebuilt chat.
@@ -135,41 +135,49 @@ The visible preview refreshes every second, including when agent status is
 unchanged. Hiding it stops pane reads. Attach is exclusive and never uses
 `--takeover`; if another client holds the terminal, or attach/read fails, the
 preview shows `Preview unavailable`. Enter still opens the original pane.
-Previewing never sends input, changes focus, resizes splits, or acknowledges a
-reminder. The baseline attachment protocol was checked with Herdr 0.9.5; this Rust port
-validates it with isolated fake attachments. Glow is not used by the picker.
+In navigation mode, previewing never sends input, changes focus, resizes splits, or acknowledges a
+reminder. The baseline attachment protocol was checked with Herdr 0.9.5; this checkout
+validates it with isolated PTY attachments. Glow is not used by the picker.
 
-## Send a message without leaving the picker
+## Type directly in the right preview
 
-Press `i` outside search to open the bottom composer. Its recipient shows the pane,
-foreground PID and agent name/kind captured when it opens. The list and preview stay
-visible; the preview keeps refreshing, and pending list reloads resume on return.
-Changing status, sort order
-or focus flags cannot redirect the message. Enter submits non-empty text literally
-plus one Enter using a single `herdr agent prompt` request, then returns to the
-picker. Esc discards the draft with zero sends. Neither action focuses or closes
-an agent pane. Backspace removes one Unicode character; Korean UTF-8 is supported.
+Press `i` outside search to enter the selected agent's real terminal through the
+preview's existing PTY attachment. The left list remains visible and its reloads
+pause, pinning the recipient. Each typed byte goes directly to that attachment:
+letters arrive before Enter, Korean UTF-8, arrows, backspace, control keys,
+Enter and bracketed paste are forwarded unchanged. There is no draft, Send step,
+or `agent prompt` submission. In search, `i` remains query text.
 
-Bracketed paste accepts one line, preserving spaces and shell punctuation exactly.
-Multiline, control-character, malformed UTF-8 and oversized pastes are rejected
-as a whole; input is limited to 16 KiB. Queued input after an unbracketed Enter is
-rejected to avoid sending a pasted first line or leaking subsequent picker keys.
-Use a terminal with bracketed paste support: a single unbracketed pasted line
-ending in Enter is indistinguishable from typing that line and pressing Enter.
+Standalone Esc returns locally to picker navigation without sending Esc. It waits
+40 ms to distinguish Esc from a terminal escape sequence; the initial Esc of an
+arrow/Alt sequence must be followed within that interval. Inside bracketed paste,
+Esc is data. Text already delivered remains in the agent; returning does not undo
+it. Enter, Ctrl+C and other forwarded keys have their normal target-terminal
+meaning. Picker navigation, preview scrolling, focus and alarms resume on return.
 
-Before sending, the picker rechecks the captured terminal, agent session/name/kind
-and foreground process identity. Missing identity data, a shell or unrelated
-foreground process, or a gone/replaced agent prevents submission. It uses argv,
-never shell interpolation or raw pane-input fallback. Herdr can reject a blocked
-agent. Errors appear on the bottom row; Enter/Esc returns to the picker. A failed
-or timed-out submission may have partially arrived and is **never retried**.
+Input reuses the preview's exclusive `terminal attach` connection at the exact
+fzf preview grid, without `--takeover`. The picker keeps fzf on its own PTY so it
+can continue painting while input goes to the target. Output uses the existing
+Herdr snapshots (about 100 ms while interacting, one second otherwise); only
+printable text, line breaks, tabs and SGR styles reach fzf. Raw attachment escapes
+are drained, never replayed over the picker. This is snapshot rendering, with the
+same wrapping/history limitations as the ordinary preview.
 
-The installed Herdr API has no atomic expected-identity argument for `agent prompt`.
-Revalidation and agent-specific server validation reduce risk but cannot eliminate
-the race between the final identity check and server delivery. Foreground detection
-is conservative and may reject unfamiliar executable wrappers. The contract was
-checked against the installed CLI/schema; real agent delivery is not exercised by
-the isolated regression tests.
+A hidden/unavailable/busy attachment, missing or unsafe foreground identity,
+lookup failure, disappearing/replaced agent, terminal/session/PID change, read
+failure or resize stops input visibly and requires Esc. Input is never retried or
+redirected to another terminal or a shell. The current-origin and unknown-origin
+previews remain read-only: Herdr 0.9.5 attach has no non-resizing option, so `i`
+refuses them visibly to preserve the visible pane's size. Show an available
+non-origin agent preview to interact.
+
+Identity is rechecked while idle and before each raw delivery batch. Herdr has no
+atomic identity-conditioned terminal write, so a check/write race remains; a
+foreground switch between the final check and delivery cannot be eliminated.
+Unfamiliar executable wrappers may be conservatively rejected. FIFO/PTY
+backpressure fails closed instead of buffering a message or retrying delivery.
+The tests use real fzf and an isolated PTY receiver; a disposable real Herdr server
+was attempted locally but sandbox socket permissions blocked startup.
 
 ## Reminders
 
@@ -276,8 +284,8 @@ CARGO_NET_OFFLINE=true cargo test --locked
 Fixtures use synthetic agents, an isolated state directory and fake Herdr
 executables. They never change live panes or send desktop notifications. Coverage
 includes keyboard/search behavior, live reload latency and cursor identity,
-the bottom composer (literal argv, paste/UTF-8, cancellation, immutable recipients,
-gone/replaced agents, partial failures and timeouts without retries),
+direct preview input (raw bytes before Enter, paste/UTF-8, local Esc, pinned recipients,
+gone/replaced agents, attachment/read failures and resize without retries),
 completion migration and hooks, existing reminder schema and server scope,
 worker recovery/singleton shutdown, dialogs, ANSI/frame preservation, real-fzf
 preview resizing/releasing and forced preview-process death. Notification argument

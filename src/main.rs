@@ -1,7 +1,7 @@
 mod completion;
-mod composer;
 mod config;
 mod dialog;
+mod interaction;
 mod picker;
 mod preview;
 mod reminders;
@@ -42,7 +42,7 @@ fn run() -> Result<()> {
         ),
         "alarms" | "list" => reminders::manage(),
         "menu" => reminders::menu(args.get(1).map(String::as_str).unwrap_or("")),
-        "--compose" => composer::open(arg(1)?),
+        "--interact" => interaction::open(Path::new(arg(1)?), arg(2)?),
         "worker" => reminders::worker(Path::new(arg(1)?)),
         "check" => util::check(),
         "--version" => {
@@ -78,7 +78,7 @@ fn main() {
         eprintln!("Agent picker error: {error}");
         // Match the popup's readable error prompt without blocking hooks.
         let interactive_picker = env::args().nth(1).is_none_or(|mode| mode == "picker");
-        if interactive_picker && unsafe { libc::isatty(0) } == 1 {
+        if interactive_picker && !util::stopped() && unsafe { libc::isatty(0) } == 1 {
             print!("Press Enter to close");
             let _ = io::stdout().flush();
             let _ = io::stdin().read_line(&mut String::new());

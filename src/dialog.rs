@@ -163,9 +163,8 @@ fn fitted(text: &str, width: usize) -> String {
     s
 }
 pub struct Dialog {
-    tty: File,
+    pub(crate) tty: File,
     original: libc::termios,
-    bracketed: bool,
 }
 impl Drop for Dialog {
     fn drop(&mut self) {
@@ -173,9 +172,6 @@ impl Drop for Dialog {
             libc::tcsetattr(self.tty.as_raw_fd(), libc::TCSANOW, &self.original);
         }
         let _ = self.tty.write_all(b"\x1b[0m\x1b[?25h");
-        if self.bracketed {
-            let _ = self.tty.write_all(b"\x1b[?2004l");
-        }
     }
 }
 impl Dialog {
@@ -189,16 +185,12 @@ impl Dialog {
         if unsafe { libc::tcgetattr(tty.as_raw_fd(), &mut original) } < 0 {
             return Err(std::io::Error::last_os_error().into());
         }
-        let mut d = Self {
-            tty,
-            original,
-            bracketed: false,
-        };
+        let mut d = Self { tty, original };
         d.raw()?;
         d.tty.write_all(b"\x1b[?25l")?;
         Ok(d)
     }
-    fn raw(&self) -> Result<()> {
+    pub(crate) fn raw(&self) -> Result<()> {
         let mut raw = self.original;
         unsafe {
             libc::cfmakeraw(&mut raw);
@@ -216,130 +208,24 @@ impl Dialog {
         };
         unsafe { libc::poll(&mut p, 1, ms) > 0 }
     }
-    fn size(&self) -> (usize, usize) {
+    pub(crate) fn size(&self) -> (usize, usize) {
         let mut s: libc::winsize = unsafe { std::mem::zeroed() };
         unsafe { libc::ioctl(self.tty.as_raw_fd(), libc::TIOCGWINSZ, &mut s) };
         (s.ws_col as usize, s.ws_row as usize)
     }
-    fn composer_line(&mut self, recipient: &str, text: &str, note: &str) -> Result<()> {
+    pub fn input_notice(&mut self, error: &str) -> Result<()> {
         let (columns, rows) = self.size();
-        let width = columns.saturating_sub(1);
-        let prefix = format!("To {} > ", label(recipient));
-        let prefix = fitted(&prefix, width / 2);
-        let available = width.saturating_sub(width / 2);
-        let mut tail = String::new();
-        let mut used = 0;
-        for c in text.chars().rev() {
-            let n = c.width().unwrap_or(0);
-            if used + n >= available {
-                break;
-            }
-            tail.insert(0, c);
-            used += n;
-        }
-        if !note.is_empty() || text.is_empty() {
-            tail = fitted(
-                if note.is_empty() {
-                    "Enter: send / Esc: cancel"
-                } else {
-                    note
-                },
-                available,
-            );
-        }
         write!(
             self.tty,
-            "\x1b[{};1H{SELECTED}\x1b[2K{prefix}{tail}\x1b[0m\x1b[?25h",
-            rows.max(1)
+            "\x1b7\x1b[{};1H{SELECTED}\x1b[2K{}\x1b[0m\x1b8",
+            rows.max(1),
+            fitted(
+                &format!("[Esc: back] Input stopped: {}", label(error)),
+                columns.saturating_sub(1)
+            )
         )?;
         self.tty.flush()?;
         Ok(())
-    }
-    pub fn compose(&mut self, recipient: &str) -> Result<Option<String>> {
-        self.bracketed = true;
-        self.tty.write_all(b"\x1b[?2004h")?;
-        let mut input = ComposerInput::default();
-        loop {
-            self.composer_line(recipient, &input.text, &input.note)?;
-            self.raw()?;
-            if !self.ready(if input.escape.is_empty() { 100 } else { 40 }) {
-                if input.escape == b"\x1b" {
-                    return Ok(None);
-                }
-                // Keep incomplete CSI/paste markers inert across delayed reads.
-                continue;
-            }
-            let mut byte = [0];
-            if self.tty.read(&mut byte)? == 0 {
-                return Ok(None);
-            }
-            match input.feed(byte[0]) {
-                ComposerEvent::Submit => {
-                    // Unbracketed multiline paste can contain apparent Enter keys.
-                    // Reject a queued input burst rather than submit its first line
-                    // and leak the remaining keys back into the picker.
-                    if self.ready(0) {
-                        while self.ready(20) {
-                            if self.tty.read(&mut byte)? == 0 {
-                                return Ok(None);
-                            }
-                        }
-                        input = ComposerInput::default();
-                        input.note = "Queued input after Enter rejected; paste one line".into();
-                    } else {
-                        return Ok(Some(input.text));
-                    }
-                }
-                ComposerEvent::Cancel => return Ok(None),
-                ComposerEvent::Continue => (),
-            }
-        }
-    }
-    pub fn composer_error(&mut self, error: &str) -> Result<()> {
-        // Stay on the bottom row; fzf's list and preview remain visible.
-        self.bracketed = true;
-        self.tty.write_all(b"\x1b[?2004h")?;
-        let mut input = ComposerInput::default();
-        loop {
-            let (columns, rows) = self.size();
-            write!(
-                self.tty,
-                "\x1b[{};1H{SELECTED}\x1b[2K{}\x1b[0m",
-                rows.max(1),
-                fitted(
-                    &format!("[Enter/Esc: back] Error: {}", label(error)),
-                    columns.saturating_sub(1)
-                )
-            )?;
-            self.raw()?;
-            if !self.ready(100) {
-                if input.escape == b"\x1b" {
-                    return Ok(());
-                }
-                continue;
-            }
-            let mut byte = [0];
-            if self.tty.read(&mut byte)? == 0 {
-                return Ok(());
-            }
-            let enter = matches!(byte[0], 10 | 13)
-                && input.escape.is_empty()
-                && input.paste.is_none()
-                && input.utf8.is_empty();
-            if enter {
-                // Consume queued pasted keys before returning control to fzf.
-                while self.ready(20) {
-                    if self.tty.read(&mut byte)? == 0 {
-                        break;
-                    }
-                }
-                return Ok(());
-            }
-            if matches!(input.feed(byte[0]), ComposerEvent::Cancel) {
-                return Ok(());
-            }
-            input.text.clear();
-        }
     }
     fn key(&mut self) -> Result<Option<String>> {
         // fzf can restore cooked input after execute-silent has been running 1s.
@@ -350,6 +236,16 @@ impl Dialog {
         let mut b = [0];
         if self.tty.read(&mut b)? == 0 {
             return Ok(Some("escape".into()));
+        }
+        if b[0] == b'i' {
+            // The outer relay waits for an i acknowledgement. While an alarm
+            // dialog owns the inner tty, it acknowledges the ignored key itself.
+            if let Some(path) = std::env::var_os("HERDR_AGENT_PICKER_INPUT_PATH") {
+                atomic_write(
+                    &std::path::PathBuf::from(path).with_extension("request"),
+                    b"null",
+                )?;
+            }
         }
         let key = match b[0] {
             27 => {
@@ -533,176 +429,9 @@ impl Dialog {
         }
     }
 }
-const COMPOSER_LIMIT: usize = 16 * 1024;
-#[derive(Default)]
-struct ComposerInput {
-    text: String,
-    utf8: Vec<u8>,
-    escape: Vec<u8>,
-    paste: Option<Vec<u8>>,
-    paste_end: usize,
-    paste_overflow: bool,
-    note: String,
-}
-enum ComposerEvent {
-    Continue,
-    Submit,
-    Cancel,
-}
-fn safe_text(s: &str) -> bool {
-    static UNSAFE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
-    !UNSAFE
-        .get_or_init(|| regex::Regex::new(r"[\p{C}\p{Zl}\p{Zp}]").unwrap())
-        .is_match(s)
-}
-impl ComposerInput {
-    fn append(&mut self, s: &str) {
-        if !safe_text(s) {
-            self.note = "Control/multiline input rejected".into();
-        } else if self.text.len() + s.len() > COMPOSER_LIMIT {
-            self.note = "Input exceeds 16 KiB".into();
-        } else {
-            self.text.push_str(s);
-            self.note.clear();
-        }
-    }
-    fn feed(&mut self, byte: u8) -> ComposerEvent {
-        if let Some(paste) = self.paste.as_mut() {
-            const END: &[u8] = b"\x1b[201~";
-            if paste.len() < COMPOSER_LIMIT + END.len() {
-                paste.push(byte);
-            } else {
-                self.paste_overflow = true;
-            }
-            self.paste_end = if byte == END[self.paste_end] {
-                self.paste_end + 1
-            } else {
-                usize::from(byte == END[0])
-            };
-            if self.paste_end == END.len() {
-                let mut bytes = self.paste.take().unwrap();
-                if self.paste_overflow {
-                    self.note = "Paste exceeds 16 KiB; rejected".into();
-                } else {
-                    bytes.truncate(bytes.len() - END.len());
-                    match String::from_utf8(bytes) {
-                        Ok(s) => self.append(&s),
-                        Err(_) => self.note = "Invalid UTF-8 paste rejected".into(),
-                    }
-                }
-                self.paste_end = 0;
-                self.paste_overflow = false;
-            }
-            return ComposerEvent::Continue;
-        }
-        if !self.escape.is_empty() {
-            if byte == 27 {
-                self.escape = vec![27];
-                return ComposerEvent::Continue;
-            }
-            if matches!(byte, 3 | 4) {
-                return ComposerEvent::Cancel;
-            }
-            self.escape.push(byte);
-            if self.escape == b"\x1b[200~" {
-                self.paste = Some(vec![]);
-                self.escape.clear();
-            } else if (self.escape.len() >= 3 && (0x40..=0x7e).contains(&byte))
-                || (self.escape.len() == 2 && !b"[O".contains(&byte))
-            {
-                self.escape.clear();
-            } else if self.escape.len() > 32 {
-                self.escape.truncate(32);
-            }
-            return ComposerEvent::Continue;
-        }
-        if !self.utf8.is_empty() || byte >= 128 {
-            self.utf8.push(byte);
-            match std::str::from_utf8(&self.utf8) {
-                Ok(s) => {
-                    let s = s.to_owned();
-                    self.utf8.clear();
-                    self.append(&s);
-                }
-                Err(e) if e.error_len().is_some() => {
-                    self.utf8.clear();
-                    self.note = "Invalid UTF-8 input rejected".into();
-                }
-                _ => (),
-            }
-            return ComposerEvent::Continue;
-        }
-        match byte {
-            27 => self.escape.push(byte),
-            3 | 4 => return ComposerEvent::Cancel,
-            10 | 13 if !self.text.is_empty() => return ComposerEvent::Submit,
-            10 | 13 => self.note = "Enter text; Esc cancels".into(),
-            8 | 127 => {
-                self.text.pop();
-            }
-            0..=31 => self.note = "Control input rejected".into(),
-            _ => self.append(&(byte as char).to_string()),
-        }
-        ComposerEvent::Continue
-    }
-}
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn composer_decodes_utf8_and_keeps_paste_inert() {
-        let mut input = ComposerInput::default();
-        for byte in "한글".as_bytes() {
-            assert!(matches!(input.feed(*byte), ComposerEvent::Continue));
-        }
-        input.feed(127);
-        assert_eq!(input.text, "한");
-        for paste in [
-            b"\x1b[200~one\r\ntwo\x1b[201~".as_slice(),
-            b"\x1b[200~bad\x1b[31m\x03\x00\x1b[201~",
-            b"\x1b[200~\xff\x1b[201~",
-        ] {
-            for byte in paste {
-                assert!(matches!(input.feed(*byte), ComposerEvent::Continue));
-            }
-            assert_eq!(input.text, "한");
-            assert!(!input.note.is_empty());
-        }
-        let literal = " --한글 '$HOME' `literal` ";
-        for byte in format!("\x1b[200~{literal}\x1b[201~").bytes() {
-            assert!(matches!(input.feed(byte), ComposerEvent::Continue));
-        }
-        assert_eq!(input.text, format!("한{literal}"));
-        assert!(matches!(input.feed(13), ComposerEvent::Submit));
-    }
-    #[test]
-    fn composer_limits_and_control_sequences() {
-        let mut input = ComposerInput::default();
-        assert!(matches!(input.feed(13), ComposerEvent::Continue));
-        for byte in b"\x1b[A\x1b[3~\x1bOP\x00\t" {
-            input.feed(*byte);
-        }
-        assert!(input.text.is_empty());
-        for byte in b"\x1b[200~" {
-            input.feed(*byte);
-        }
-        for _ in 0..COMPOSER_LIMIT + 100 {
-            input.feed(b'x');
-        }
-        for byte in b"\x1b[201~" {
-            input.feed(*byte);
-        }
-        assert!(input.text.is_empty());
-        assert!(input.note.contains("rejected"));
-        assert!(input.paste.is_none());
-        input.append(&"x".repeat(COMPOSER_LIMIT));
-        input.append("한");
-        assert_eq!(input.text.len(), COMPOSER_LIMIT);
-        assert!(!safe_text("invisible\u{202e}"));
-        assert!(!safe_text("line\u{2028}break"));
-        assert!(safe_text("한글 e\u{301}"));
-        assert!(matches!(input.feed(3), ComposerEvent::Cancel));
-    }
     #[test]
     fn daylight_saving_calendar() {
         if std::env::var("HERDR_TEST_DST_CHILD").is_err() {

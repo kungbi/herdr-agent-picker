@@ -475,9 +475,11 @@ impl Pty {
     pub fn clear(&mut self) {
         self.output.clear();
     }
+    #[track_caller]
     pub fn wait_for(&mut self, marker: &[u8]) {
         self.wait_for_timeout(marker, Duration::from_secs(8));
     }
+    #[track_caller]
     pub fn wait_for_timeout(&mut self, marker: &[u8], timeout: Duration) {
         let end = Instant::now() + timeout;
         while !self.output.windows(marker.len()).any(|s| s == marker) {
@@ -490,6 +492,7 @@ impl Pty {
             self.drain(Duration::from_millis(30));
         }
     }
+    #[track_caller]
     pub fn wait_until(&mut self, mut f: impl FnMut() -> bool, d: Duration) {
         let end = Instant::now() + d;
         while !f() {
@@ -649,4 +652,185 @@ pub fn local_format(at: f64, fmt: &str) -> String {
     let mut b = [0u8; 128];
     let n = unsafe { libc::strftime(b.as_mut_ptr().cast(), b.len(), fmt.as_ptr(), &tm) };
     String::from_utf8(b[..n].to_vec()).unwrap()
+}
+
+pub struct Screen {
+    cells: Vec<Vec<char>>,
+    pub frame: Vec<Vec<char>>,
+    cursor: (usize, usize),
+    saved: (usize, usize),
+    pending: Vec<u8>,
+    csi: regex::Regex,
+    row_pattern: regex::Regex,
+}
+
+impl Screen {
+    pub fn new(rows: usize, columns: usize) -> Self {
+        let cells = vec![vec![' '; columns]; rows];
+        Self {
+            frame: cells.clone(),
+            cells,
+            cursor: (0, 0),
+            saved: (0, 0),
+            pending: Vec::new(),
+            csi: regex::Regex::new(r"^\x1b\[([0-?]*)([ -/]*)([@-~])").unwrap(),
+            row_pattern: regex::Regex::new(r"ROW_[0-9]{2}(?:_EDIT)?").unwrap(),
+        }
+    }
+
+    pub fn feed(&mut self, data: &[u8]) {
+        use unicode_width::UnicodeWidthChar;
+        let mut bytes = std::mem::take(&mut self.pending);
+        bytes.extend_from_slice(data);
+        let mut bytes = bytes.as_slice();
+        while !bytes.is_empty() {
+            let consumed = if bytes.starts_with(b"\x1b[") {
+                let Some(end) = bytes[2..]
+                    .iter()
+                    .position(|byte| (b'@'..=b'~').contains(byte))
+                else {
+                    break;
+                };
+                let length = end + 3;
+                let sequence = std::str::from_utf8(&bytes[..length]).unwrap();
+                let captures = self
+                    .csi
+                    .captures(sequence)
+                    .unwrap_or_else(|| panic!("bad CSI {sequence:?}"));
+                self.control(&captures[1], captures[3].as_bytes()[0]);
+                length
+            } else if bytes[0] == 27 {
+                let Some(escape) = bytes.get(1) else { break };
+                match escape {
+                    b']' => {
+                        let Some(end) = (2..bytes.len())
+                            .find(|&i| bytes[i] == 7 || bytes[i..].starts_with(b"\x1b\\"))
+                        else {
+                            break;
+                        };
+                        end + if bytes[end] == 7 { 1 } else { 2 }
+                    }
+                    b'7' => {
+                        self.saved = self.cursor;
+                        2
+                    }
+                    b'8' => {
+                        self.cursor = self.saved;
+                        2
+                    }
+                    b'(' | b')' if bytes.len() >= 3 => 3,
+                    b'(' | b')' => break,
+                    other => panic!("unsupported escape {other:?}"),
+                }
+            } else {
+                let width = match bytes[0] {
+                    0..=127 => 1,
+                    194..=223 => 2,
+                    224..=239 => 3,
+                    240..=244 => 4,
+                    _ => panic!("invalid UTF-8 in terminal output: {bytes:?}"),
+                };
+                if bytes.len() < width {
+                    break;
+                }
+                let ch = std::str::from_utf8(&bytes[..width])
+                    .unwrap()
+                    .chars()
+                    .next()
+                    .unwrap();
+                let (row, col) = &mut self.cursor;
+                match ch {
+                    '\r' => *col = 0,
+                    '\n' => *row = (*row + 1).min(self.cells.len() - 1),
+                    '\x08' => *col = col.saturating_sub(1),
+                    _ => {
+                        if let Some(width @ 1..) = ch.width() {
+                            self.cells[*row][*col] = ch;
+                            *col = (*col + width).min(self.cells[0].len() - 1);
+                        }
+                    }
+                }
+                width
+            };
+            bytes = &bytes[consumed..];
+        }
+        self.pending.extend_from_slice(bytes);
+    }
+
+    pub fn control(&mut self, args: &str, action: u8) {
+        if args.starts_with('?') {
+            if args == "?7" && action == b'h' {
+                // fzf restores auto-wrap at the end of a repaint.
+                self.frame.clone_from(&self.cells);
+            }
+            return;
+        }
+        let mut values = args
+            .split(';')
+            .map(|value| value.parse::<usize>().unwrap_or(0));
+        let code = values.next().unwrap_or(0);
+        let n = code.max(1);
+        let (row, col) = &mut self.cursor;
+        let columns = self.cells[0].len();
+        match action {
+            b'A' => *row = row.saturating_sub(n),
+            b'B' => *row += n,
+            b'C' => *col += n,
+            b'D' => *col = col.saturating_sub(n),
+            b'H' | b'f' => {
+                *row = n - 1;
+                *col = values.next().unwrap_or(0).max(1) - 1;
+            }
+            b'G' => *col = n - 1,
+            b'd' => *row = n - 1,
+            b'J' => match code {
+                0 => {
+                    self.cells[*row][*col..].fill(' ');
+                    for line in &mut self.cells[*row + 1..] {
+                        line.fill(' ');
+                    }
+                }
+                2 | 3 => {
+                    for line in &mut self.cells {
+                        line.fill(' ');
+                    }
+                }
+                _ => panic!("unsupported erase: {args}"),
+            },
+            b'K' | b'X' => {
+                let (start, end) = match (action, code) {
+                    (b'X', _) => (*col, (*col + n).min(columns)),
+                    (b'K', 1) => (0, *col + 1),
+                    (b'K', 2) => (0, columns),
+                    _ => (*col, columns),
+                };
+                self.cells[*row][start..end].fill(' ');
+            }
+            b's' => self.saved = (*row, *col),
+            b'u' => (*row, *col) = self.saved,
+            b'm' | b'h' | b'l' | b'n' | b't' | b'q' => {}
+            _ => panic!("unsupported CSI: {args} {}", char::from(action)),
+        }
+        *row = (*row).min(self.cells.len() - 1);
+        *col = (*col).min(columns - 1);
+    }
+
+    pub fn preview(&self) -> Vec<String> {
+        let text = self
+            .frame
+            .iter()
+            .map(|row| row[43..97].iter().collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n");
+        self.row_pattern
+            .find_iter(&text)
+            .map(|row| row.as_str().to_owned())
+            .collect()
+    }
+
+    pub fn pump(&mut self, picker: &mut Pty) {
+        picker.drain(Duration::from_millis(30));
+        self.feed(&picker.output);
+        picker.clear();
+    }
 }
