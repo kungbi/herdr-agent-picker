@@ -18,6 +18,7 @@ import time
 import unicodedata
 
 ROOT = Path(__file__).resolve().parents[1]
+from rust_support import BINARY
 STYLES = re.compile(r'\x1b\[[0-9;:]*m')
 
 
@@ -101,7 +102,7 @@ print(json.dumps({'result': result}))
             for source, expected in cases:
                 snapshots.write_text(json.dumps({'w1:p1': source, 'w1:p2': 'SECOND_RESPONSE\n'}))
                 rendered = subprocess.run(
-                    [sys.executable, str(ROOT / 'agent-picker.py'), '--preview', 'w1:p1'],
+                    [str(BINARY), '--preview', 'w1:p1'],
                     env=environment, text=True, capture_output=True, check=True, timeout=5,
                 ).stdout
                 assert STYLES.sub('', rendered) == expected, repr(rendered)
@@ -110,7 +111,7 @@ print(json.dumps({'result': result}))
             print('PASS: zero/short frame padding, combining Korean text, literal tables and interleaved ANSI padding')
         for pane_id in ('w1:p1', 'w1:p2'):
             rendered = subprocess.run(
-                [sys.executable, str(ROOT / 'agent-picker.py'), '--preview', pane_id],
+                [str(BINARY), '--preview', pane_id],
                 env=environment, text=True, capture_output=True, check=True, timeout=5,
             ).stdout
             source = json.loads(snapshots.read_text())[pane_id]
@@ -120,7 +121,7 @@ print(json.dumps({'result': result}))
             assert len(rendered.splitlines()) == len(source.splitlines())
         pid, fd = pty.fork()
         if pid == 0:
-            os.execve(sys.executable, [sys.executable, str(ROOT / 'agent-picker.py')], environment)
+            os.execve(str(BINARY), [str(BINARY)], environment)
         fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack('HHHH', 28, columns, 0, 0))
         output = bytearray()
         exited = False

@@ -18,11 +18,9 @@ import time
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from agent_completion_times import cache_path, record_event
-from agent_reminders import ReminderStore, current_context
+from rust_support import BINARY, cache_path, seed_event as record_event, load_times, FixtureStore as ReminderStore, current_context
 
-PYTHON = sys.executable
-PICKER = sys.argv[1] if len(sys.argv) > 1 else str(ROOT / 'agent-picker.py')
+PICKER = str(BINARY)
 
 with tempfile.TemporaryDirectory(prefix='herdr-picker-test-') as directory:
     root = Path(directory)
@@ -86,7 +84,7 @@ print(json.dumps({'result': result}))
     store, scope = ReminderStore(), current_context()['scope']
     preview_calls = root / 'colored-preview.calls'
     preview_result = subprocess.run(
-        [PYTHON, PICKER, '--preview', 'w1:p1'],
+        [PICKER, '--preview', 'w1:p1'],
         env=dict(os.environ, HERDR_BIN_PATH=str(fake), PICKER_CALL_LOG=str(preview_calls)),
         text=True, capture_output=True, check=True, timeout=5,
     )
@@ -98,7 +96,7 @@ print(json.dumps({'result': result}))
     for agent_kind in ('codex', 'hermes'):
         native_calls = root / f'{agent_kind}-native-preview.calls'
         native_result = subprocess.run(
-            [PYTHON, PICKER, '--preview', 'w1:p1'],
+            [PICKER, '--preview', 'w1:p1'],
             env=dict(os.environ, HERDR_BIN_PATH=str(fake), PICKER_CALL_LOG=str(native_calls),
                      PICKER_AGENT_KIND=agent_kind),
             text=True, capture_output=True, check=True, timeout=5,
@@ -157,7 +155,16 @@ print(json.dumps({'result': result}))
         ('jump_down_end', 40, [b'\x04' * 8, b'\r'], 'w1:p5'),
         ('jump_up_end', 40, [b'\x04' * 8 + b'\x15', b'\r'], 'w1:p36'),
     ]
+    selected_case = os.environ.get('HERDR_AGENT_PICKER_TEST_CASE')
+    if selected_case:
+        scenarios = [s for s in scenarios if s[0] == selected_case]
+        assert scenarios, f'Unknown picker fixture: {selected_case}'
     for scenario, count, key_steps, expected in scenarios:
+        # Seed a fresh three-minute age for each isolated popup; the complete
+        # regression suite may itself take longer than a minute on slow CI.
+        fixture_times = load_times(cache_path())
+        fixture_times['w1:p3']['completed_at'] = time.time() - 180
+        cache_path().write_text(json.dumps(fixture_times))
         focus_log = root / f'{scenario}.focus'
         call_log = root / f'{scenario}.calls'
         opened_at = time.monotonic()
@@ -177,7 +184,7 @@ print(json.dumps({'result': result}))
                 environment['PICKER_LONG_PREVIEW'] = '1'
             if scenario == 'preview_padded':
                 environment['PICKER_PADDED_PREVIEW'] = '1'
-            os.execve(PYTHON, [PYTHON, PICKER], environment)
+            os.execve(PICKER, [PICKER], environment)
         fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack('HHHH', 24, 72 if unread_alarm else 100, 0, 0))
         output = bytearray()
         deadline = time.monotonic() + 8
@@ -227,7 +234,8 @@ print(json.dumps({'result': result}))
                 assert numbers == expected_numbers, numbers
             for keys in key_steps[:-1]:
                 if scenario.startswith('search_') and keys == b'/':
-                    while select.select([fd], [], [], 0.05)[0]:
+                    drain_until = time.monotonic() + 0.2
+                    while time.monotonic() < drain_until and select.select([fd], [], [], 0.03)[0]:
                         os.read(fd, 65536)
                     output.clear()
                 os.write(fd, keys)
@@ -242,7 +250,8 @@ print(json.dumps({'result': result}))
                             break
                 assert os.waitpid(pid, os.WNOHANG)[0] == 0, f'{scenario}: picker closed before the final action'
                 if scenario.startswith('search_') and keys == b'/':
-                    while select.select([fd], [], [], 0.05)[0]:
+                    drain_until = time.monotonic() + 0.2
+                    while time.monotonic() < drain_until and select.select([fd], [], [], 0.03)[0]:
                         output.extend(os.read(fd, 65536))
                     assert b'!^' not in output, repr(output[-4000:])
                 assert not focus_log.exists(), 'Partial input or navigation changed focus'
@@ -271,6 +280,7 @@ print(json.dumps({'result': result}))
                         output.extend(os.read(fd, 65536))
                 assert b'PADDED_END' in output, 'Right-edge padding wrapped into blank rows and pushed content off screen'
             os.write(fd, key_steps[-1])
+            deadline = time.monotonic() + 5
             while time.monotonic() < deadline:
                 done, status = os.waitpid(pid, os.WNOHANG)
                 if done:
@@ -282,7 +292,7 @@ print(json.dumps({'result': result}))
                         if error.errno != errno.EIO:
                             raise
             else:
-                raise AssertionError('Picker did not exit')
+                raise AssertionError(f'{scenario}: picker did not exit; calls={call_log.read_text()}\n' + output.decode(errors='replace')[-8000:])
             assert os.waitstatus_to_exitcode(status) == 0, output.decode(errors='replace')
             if expected is None:
                 assert not focus_log.exists(), 'Escape changed focus'
@@ -302,7 +312,7 @@ print(json.dumps({'result': result}))
     padded_environment = dict(os.environ, HERDR_BIN_PATH=str(fake),
                               PICKER_CALL_LOG=str(root / 'padded-output.calls'), PICKER_PADDED_PREVIEW='1')
     padded_result = subprocess.run(
-        [PYTHON, PICKER, '--preview', 'w1:p1'], env=padded_environment,
+        [PICKER, '--preview', 'w1:p1'], env=padded_environment,
         text=True, capture_output=True, check=True, timeout=5,
     ).stdout
     original_padded = subprocess.run(

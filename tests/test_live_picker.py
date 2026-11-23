@@ -16,7 +16,7 @@ import time
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from agent_completion_times import cache_path, load_times, record_event
+from rust_support import BINARY, cache_path, load_times, seed_event as record_event
 
 
 def snapshot(agents):
@@ -106,7 +106,7 @@ print(json.dumps({'result': result}))
                                SNAPSHOT=str(data), CALLS=str(calls), FOCUS=str(focus))
             if scenario.startswith('slow_'):
                 environment.update(SLOW_REFRESH='1', REFRESH_STARTED=str(refresh_started))
-            os.execve(sys.executable, [sys.executable, str(ROOT / 'agent-picker.py')], environment)
+            os.execve(str(BINARY), [str(BINARY)], environment)
         fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack('HHHH', 24, 120, 0, 0))
         output = bytearray()
         exited = False

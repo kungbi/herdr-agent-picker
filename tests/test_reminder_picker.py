@@ -18,7 +18,7 @@ import time
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from agent_reminders import ReminderStore
+from rust_support import BINARY, FixtureStore as ReminderStore
 
 with tempfile.TemporaryDirectory(prefix='herdr-reminder-picker-') as directory:
     root = Path(directory)
@@ -54,19 +54,7 @@ print(json.dumps({'result': result}))
     socket.touch()
     config = root / 'config.toml'
     config.write_text('')
-    # Reproduce a slow CI process shutdown after its SQLite update is visible.
-    # Only the dedicated scenario imports this temporary startup hook.
-    (root / 'sitecustomize.py').write_text('''import atexit, os, sys, time
-from pathlib import Path
-def slow_exit():
-    marker = Path(os.environ['REMINDER_TEST_EXIT_LOG'])
-    marker.write_text('closing')
-    time.sleep(0.5)
-    marker.write_text('closed')
-if os.path.basename(sys.argv[0]) == 'agent_reminders.py' and sys.argv[1:2] in (['menu'], ['list']):
-    atexit.register(slow_exit)
-''')
-    for scenario in ('preset_cancel', 'custom', 'custom_cancel', 'manager', 'escape', 'custom_escape', 'custom_retry', 'resize', 'empty_manager', 'jk', 'delayed_jk', 'delayed_arrows', 'delayed_custom', 'slow_menu_exit'):
+    for scenario in ('preset_cancel', 'custom', 'custom_cancel', 'manager', 'escape', 'custom_escape', 'custom_retry', 'resize', 'empty_manager', 'jk', 'delayed_jk', 'delayed_arrows', 'delayed_custom'):
         state = root / scenario
         store = ReminderStore(state)
         # These tests exercise dialogs, not a race with first-time schema creation.
@@ -79,10 +67,7 @@ if os.path.basename(sys.argv[0]) == 'agent_reminders.py' and sys.argv[1:2] in ([
             environment.update(TERM='xterm-256color', HERDR_BIN_PATH=str(fake), FOCUS=str(focus),
                                HERDR_PLUGIN_STATE_DIR=str(state), HERDR_CONFIG_PATH=str(config),
                                HERDR_SOCKET_PATH=str(socket))
-            if scenario == 'slow_menu_exit':
-                environment['PYTHONPATH'] = os.pathsep.join(filter(None, (str(root), environment.get('PYTHONPATH'))))
-                environment['REMINDER_TEST_EXIT_LOG'] = str(root / 'slow-exit.log')
-            os.execve(sys.executable, [sys.executable, str(ROOT / 'agent-picker.py')], environment)
+            os.execve(str(BINARY), [str(BINARY)], environment)
         fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack('HHHH', 26, 130, 0, 0))
         output = bytearray()
         exited = False
@@ -107,8 +92,7 @@ if os.path.basename(sys.argv[0]) == 'agent_reminders.py' and sys.argv[1:2] in ([
             # A DB update or a fixed sleep does not mean fzf owns input again.
             # Its fresh header is drawn after the child command has exited.
             wait_for(lambda: b'Ctrl+D/U' in output[checkpoint:])
-            if scenario == 'slow_menu_exit':
-                assert (root / 'slow-exit.log').read_text() == 'closed', 'Sent the next key before the menu process finished'
+
 
         try:
             wait_for(lambda: b'Fictional demo task' in output)
@@ -214,6 +198,18 @@ if os.path.basename(sys.argv[0]) == 'agent_reminders.py' and sys.argv[1:2] in ([
         finally:
             for item in store.pending():
                 store.cancel(item['id'])
+            # A canceled future alarm must let its detached native worker exit.
+            worker_lock = state / 'reminders-worker.lock'
+            if worker_lock.exists():
+                with worker_lock.open('a') as lock:
+                    until = time.monotonic() + 4
+                    while True:
+                        try:
+                            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                            break
+                        except BlockingIOError:
+                            assert time.monotonic() < until, 'Detached reminder worker did not stop'
+                            time.sleep(.05)
             os.close(fd)
             if not exited:
                 try:

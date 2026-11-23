@@ -1,47 +1,39 @@
 #!/bin/sh
 set -eu
-
 plugin_root=$(CDPATH= cd "$(dirname "$0")" && pwd)
 mode=${1:-picker}
-
-# Opening an action needs no Python process before Herdr launches the popup.
-if [ "$mode" = open ]; then
-    exec "${HERDR_BIN_PATH:-herdr}" plugin pane open --plugin agent-picker --entrypoint picker
-fi
-
-python_path=${HERDR_AGENT_PICKER_PYTHON:-}
-if [ -z "$python_path" ]; then
-    for candidate in python3.14 python3.13 python3.12 python3.11; do
-        if python_path=$(command -v "$candidate" 2>/dev/null); then
-            break
+if [ "$#" -gt 0 ]; then shift; fi
+tool_python() {
+    if [ -n "${PYTHON:-}" ]; then printf '%s\n' "$PYTHON"; return; fi
+    for candidate in python3.14 python3.13 python3.12 python3.11 python3; do
+        if command -v "$candidate" >/dev/null 2>&1 && "$candidate" -c 'import sys; sys.exit(sys.version_info < (3, 11))'; then
+            command -v "$candidate"
+            return
         fi
     done
-fi
-if [ -z "$python_path" ]; then
-    python_path=$(command -v python3 2>/dev/null || true)
-    if [ -z "$python_path" ] || ! "$python_path" -c 'import sys; sys.exit(sys.version_info < (3, 11))'; then
-        printf '%s\n' 'Agent Picker requires Python 3.11 or newer. See README.md.' >&2
-        exit 1
-    fi
-fi
-
+    printf '%s\n' 'Build/test packaging tools require Python 3.11 or newer.' >&2
+    return 1
+}
 case "$mode" in
-    picker) exec "$python_path" "$plugin_root/agent-picker.py" ;;
-    record) exec "$python_path" "$plugin_root/agent_completion_times.py" ;;
-    alarms) exec "$python_path" "$plugin_root/agent_reminders.py" list ;;
-    check) exec "$python_path" "$plugin_root/check_dependencies.py" ;;
-    package) exec "$python_path" "$plugin_root/scripts/build_package.py" ;;
+    open) exec "${HERDR_BIN_PATH:-herdr}" plugin pane open --plugin agent-picker --entrypoint picker ;;
+    build) exec cargo build --release --locked --manifest-path "$plugin_root/Cargo.toml" "$@" ;;
     test)
-        "$python_path" "$plugin_root/tests/test_completion_times.py"
-        "$python_path" "$plugin_root/tests/test_date_sections.py"
-        "$python_path" "$plugin_root/tests/test_preview.py"
-        "$python_path" "$plugin_root/tests/test_conversation_picker.py"
-        "$python_path" "$plugin_root/tests/test_preview_resize.py"
-        "$python_path" "$plugin_root/tests/test_reminders.py"
-        "$python_path" "$plugin_root/tests/test_reminder_picker.py"
-        "$python_path" "$plugin_root/tests/test_package.py"
-        "$python_path" "$plugin_root/tests/test_picker.py"
-        exec "$python_path" "$plugin_root/tests/test_live_picker.py"
+        cd "$plugin_root"
+        cargo test --locked
+        cargo build --locked
+        export HERDR_AGENT_PICKER_TEST_BINARY="${HERDR_AGENT_PICKER_TEST_BINARY:-$plugin_root/target/debug/herdr-agent-picker}"
+        exec "$(tool_python)" tests/run_rust_regressions.py "$@"
         ;;
+    package) exec "$(tool_python)" "$plugin_root/scripts/build_package.py" "$@" ;;
+    picker|record|alarms|check|worker|menu|list|--version|--preview|--live-preview|--rows|--refresh) ;;
     *) printf 'Unknown command: %s\n' "$mode" >&2; exit 2 ;;
 esac
+if [ -x "$plugin_root/bin/herdr-agent-picker" ]; then
+    binary="$plugin_root/bin/herdr-agent-picker"
+elif [ -x "$plugin_root/target/release/herdr-agent-picker" ]; then
+    binary="$plugin_root/target/release/herdr-agent-picker"
+else
+    printf '%s\n' 'Build Agent Picker with: sh ./run build (or extract a native release package).' >&2
+    exit 1
+fi
+exec "$binary" "$mode" "$@"

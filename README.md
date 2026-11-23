@@ -1,7 +1,6 @@
 # Herdr Agent Picker
 
-**Preview · 0.1.0-preview.7** — development and implementation live on `preview`.
-The default branch is `main`.
+**[Download v0.1.0](https://github.com/kungbi/herdr-agent-picker/releases/tag/v0.1.0)** · Native Rust plugin for macOS and Linux.
 
 A compact, keyboard-driven agent popup for Herdr.
 
@@ -30,33 +29,45 @@ A compact, keyboard-driven agent popup for Herdr.
 ## Requirements
 
 - Herdr 0.9.1 or newer.
-- Python 3.11 or newer.
+- System SQLite 3 library (included in macOS; `libsqlite3-0` on Debian/Ubuntu).
 - fzf 0.73.1 or newer, available on PATH.
 - macOS or Linux. Tested on macOS; Windows is not supported.
 
 On macOS with Homebrew:
 
 ```sh
-brew install python@3.14 fzf
+brew install fzf
 ```
 
-The launcher discovers versioned Python executables on PATH before falling back
-to `python3`. Set `HERDR_AGENT_PICKER_PYTHON` to override the interpreter.
+Native release packages include the Rust executable and need no Python or Rust
+installation. Use a package matching your OS and architecture; CI builds packages
+for its macOS and Linux runner architectures. Other macOS/Linux architectures can build from
+source. Linux GNU packages require a compatible glibc (build on the oldest target
+system when distributing to older Linux releases).
 
-## Install the preview
+## Build from source
 
-Install dependencies, then install directly through Herdr:
+A source checkout or source archive requires a Rust toolchain and SQLite headers
+(`libsqlite3-dev` and a C toolchain on Debian/Ubuntu; Xcode command line tools on
+macOS). Build within the checkout:
 
 ```sh
-herdr plugin install kungbi/herdr-agent-picker --ref preview
+sh ./run build
+sh ./run check
 ```
 
-For a fixed version, use `--ref v0.1.0-preview.7`. Run the same command again to
-update the installed preview. Configure the keybinding below after installing.
+For a cached, disconnected build use `sh ./run build --offline`. The launcher uses
+`bin/herdr-agent-picker` in native packages, or `target/release/herdr-agent-picker`
+in a source checkout. It does not invoke Python, install anything globally, or
+compile during hooks/popup startup. Rebuild after changing Rust source.
 
-Versioned `.tar.gz` and `.zip` packages with `SHA256SUMS` are available from
-[GitHub Releases](https://github.com/kungbi/herdr-agent-picker/releases).
-Extract a package to a permanent directory and follow Local installation.
+## Native packages
+
+Extract the matching `.tar.gz` or `.zip` package to a permanent directory and
+follow Local installation below. Check it against its `SHA256SUMS-<target>` file.
+Source archives include Rust code plus Python build/test tooling, without a
+prebuilt binary. `herdr plugin install` from a source Git ref also requires the
+build step; automatic source compilation during installation is not assumed.
 
 ## Local installation
 
@@ -84,8 +95,7 @@ description = "Select agent"
 Merge the entries into any existing `[keys]` section instead of duplicating it.
 Then run `herdr server reload-config`. Use your prefix followed by `g`.
 
-No Python packages or compilation step are required. The same source package
-runs on macOS and Linux with the dependencies listed above.
+Native packages need no compilation. Build source checkouts before linking them.
 
 ## Original terminal preview
 
@@ -99,8 +109,9 @@ counting Korean/wide and combining characters rather than string length. The
 matching outer `│`/`┃` and trailing spaces are removed even with zero or short
 padding; ordinary table borders and leading code indentation stay intact. ANSI
 styles, original paragraph breaks and source-side hard line breaks are preserved.
-The selected terminal is temporarily attached at fzf's actual preview rows and
-columns before each snapshot. This resizes its PTY, not the Herdr split. The
+The terminal you opened the picker from is previewed without resizing it. For
+other agents, the picker temporarily attaches at the preview's rows and columns.
+This resizes the selected terminal's PTY, not the Herdr split. The
 attachment is released when selection changes, the preview is hidden, the picker
 closes, or a read fails. The source application may redraw while attached and
 again when released. A recent snapshot is not a pixel-identical mirror: the last
@@ -114,8 +125,8 @@ unchanged. Hiding it stops pane reads. Attach is exclusive and never uses
 `--takeover`; if another client holds the terminal, or attach/read fails, the
 preview shows `Preview unavailable`. Enter still opens the original pane.
 Previewing never sends input, changes focus, resizes splits, or acknowledges a
-reminder. Terminal attach behavior has been checked with Herdr 0.9.5. Glow is not
-used by the picker.
+reminder. The baseline attachment protocol was checked with Herdr 0.9.5; this Rust port
+validates it with isolated fake attachments. Glow is not used by the picker.
 
 ## Reminders
 
@@ -154,8 +165,8 @@ The reminder never sends input to an agent or changes the focused pane.
 
 An overdue reminder is delivered after the computer wakes. After a reboot, open
 the picker to resume saved reminders. Failed deliveries are retried every minute.
-Reminder data stays in `HERDR_PLUGIN_STATE_DIR/reminders.sqlite3` (or the direct
-script state directory below); it is excluded from Git and release archives.
+Reminder data stays in `HERDR_PLUGIN_STATE_DIR/reminders.sqlite3` (or the standalone
+state directory below); it is excluded from Git and release archives.
 
 ## Completion times and ordering
 
@@ -187,7 +198,7 @@ number; use `j`/`k` or arrow keys and Enter to select them. `0` has no shortcut.
 
 Times persist after a completed agent becomes idle and clear when new work starts.
 State is stored under `HERDR_PLUGIN_STATE_DIR/completions`, outside this package.
-Direct script runs use `$XDG_STATE_HOME/herdr-agent-picker` (default `~/.local/state`).
+Standalone runs use `$XDG_STATE_HOME/herdr-agent-picker` (default `~/.local/state`).
 Server instances are isolated; completion times from before a server restart are
 not reused. The earlier standalone picker's records are read as a migration fallback.
 
@@ -197,19 +208,51 @@ model metadata separated by ` · `, preserving model names mentioned in task tex
 ## Validation
 
 ```sh
+cargo fmt --check
+cargo check --locked
+cargo test --locked
+sh ./run build
 sh ./run check
 sh ./run test
 sh ./run package
+sh ./run package --source
 ```
 
-Tests use fake Herdr responses and real fzf in a pseudo-terminal. They do not
-change focus in your live Herdr session or send real notifications.
+`run test` builds and tests Rust, then uses Python 3.11+ as a PTY/SQLite fixture
+harness around the compiled Rust binary and real fzf. Set `PYTHON` to select the
+build/test interpreter; Python is never a plugin runtime dependency. To test a
+specific native build directly:
 
-Packaging creates reproducible `.tar.gz` and `.zip` archives plus `SHA256SUMS`
-in `dist/`, using an explicit file list. Local settings, sockets, completion
-records and caches are excluded. CI tests Python 3.11 and 3.14 on macOS and Linux.
-Pushing a matching `v*-preview.*` tag publishes a GitHub prerelease after tests
-pass; the manifest version must match the tag. See [CHANGELOG.md](CHANGELOG.md).
+```sh
+HERDR_AGENT_PICKER_TEST_BINARY="$PWD/target/release/herdr-agent-picker" \
+  python3.11 tests/run_rust_regressions.py
+```
+
+Fixtures use synthetic agents, an isolated state directory and fake Herdr
+executables. They never change live panes or send desktop notifications. Coverage
+includes keyboard/search behavior, live reload latency and cursor identity,
+completion migration and hooks, existing reminder schema and server scope,
+worker recovery/singleton shutdown, dialogs, ANSI/frame preservation, real-fzf
+preview resizing/releasing and forced preview-process death. Notification argument
+construction and retry/acknowledgement logic have native unit coverage; actual OS
+notification presentation and real Herdr attachment are not automated here.
+
+The former Python runtime and its Python-only unit tests were removed. Neither
+`cargo test` nor the explicitly enumerated regression suite can silently fall
+back to them. `agent_preview.py` was unused by the baseline picker and is not
+part of the port.
+
+Python packaging tooling creates deterministic `.tar.gz`/`.zip` archives and
+per-target checksums in `dist/`, using explicit allowlists. Local settings,
+sockets, state and caches are excluded. CI tests Rust and real fzf on macOS and
+Linux, then builds a native package for each runner and a source archive. A
+matching version tag publishes a release only after checks pass (`-preview.*` tags are prereleases); Cargo
+and plugin manifest versions must match. Archive reproducibility means identical
+archives from identical input files; native compiler output itself is not claimed
+to be reproducible across machines. See [CHANGELOG.md](CHANGELOG.md).
+
+Local checks, fixture counts, artifacts and verification limits are recorded in
+[the Rust port validation report](docs/rust-port-validation.md).
 
 ## Removal
 

@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.0
+
+- Keep the terminal behind the picker at its original size when previewing that agent.
+
+- Replace the user-facing Python runtime with native Rust for the picker, hooks,
+  completion history, reminders, dialogs and guarded terminal previews.
+- Preserve completion cache identity/migration and the reminder SQLite schema,
+  server scope, unread markers, retries and detached worker ownership.
+- Package native macOS/Linux binaries and Rust source separately; Python remains
+  only as packaging and isolated PTY regression tooling.
+- Run native unit tests and explicit real-fzf Rust regressions in CI.
+
 ## 0.1.0-preview.7
 
 - Stabilize terminal tests by waiting for the picker to redraw after dialogs
