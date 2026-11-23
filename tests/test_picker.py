@@ -53,6 +53,12 @@ elif args[:2] == ['agent', 'get']:
     result = {'agent': {'agent': os.environ.get('PICKER_AGENT_KIND', 'claude')}}
 elif args[:2] == ['pane', 'report-metadata']:
     result = {}
+elif args[:2] == ['pane', 'get']:
+    result = {'pane': {'terminal_id': args[2]}}
+elif args[:2] == ['terminal', 'attach']:
+    import time
+    print('\\x1b[2J', flush=True)
+    while True: time.sleep(1)
 elif args[:2] == ['pane', 'read']:
     preview_text = 'PREVIEW for ' + args[2]
     if os.environ.get('PICKER_LONG_PREVIEW'):
@@ -189,7 +195,7 @@ print(json.dumps({'result': result}))
                 assert store.unread(scope) == {'w1:p1'}, 'Previewing an agent acknowledged its alarm'
             ready_ms = (time.monotonic() - opened_at) * 1000
             calls = call_log.read_text().splitlines()
-            data_calls = [call for call in calls if not call.startswith(('pane read ', 'agent get '))]
+            data_calls = [call for call in calls if not call.startswith(('pane read ', 'pane get ', 'terminal attach ', 'agent get '))]
             assert data_calls in (["api snapshot"], ["agent list", "workspace list", "tab list"]), calls
             assert 'pane read w1:p1 --source recent-unwrapped --lines 30 --format ansi' in calls, calls
             assert not focus_log.exists(), 'Opening the picker changed focus'

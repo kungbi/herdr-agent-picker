@@ -36,6 +36,7 @@ case "$mode" in
         "$python_path" "$plugin_root/tests/test_date_sections.py"
         "$python_path" "$plugin_root/tests/test_preview.py"
         "$python_path" "$plugin_root/tests/test_conversation_picker.py"
+        "$python_path" "$plugin_root/tests/test_preview_resize.py"
         "$python_path" "$plugin_root/tests/test_reminders.py"
         "$python_path" "$plugin_root/tests/test_reminder_picker.py"
         "$python_path" "$plugin_root/tests/test_package.py"

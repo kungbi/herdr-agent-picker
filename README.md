@@ -99,17 +99,23 @@ counting Korean/wide and combining characters rather than string length. The
 matching outer `│`/`┃` and trailing spaces are removed even with zero or short
 padding; ordinary table borders and leading code indentation stay intact. ANSI
 styles, original paragraph breaks and source-side hard line breaks are preserved.
-fzf wraps the cleaned body to the narrower preview width without resizing the
-source pane. This is a recent terminal snapshot, not a pixel-identical mirror:
-the last 30 source rows can include input/status UI. A snapshot without a blank
-frame reference, complex joined emoji widths, hard-drawn tables and source-side
+The selected terminal is temporarily attached at fzf's actual preview rows and
+columns before each snapshot. This resizes its PTY, not the Herdr split. The
+attachment is released when selection changes, the preview is hidden, the picker
+closes, or a read fails. The source application may redraw while attached and
+again when released. A recent snapshot is not a pixel-identical mirror: the last
+30 source rows can include input/status UI. A snapshot without a blank frame
+reference, complex joined emoji widths, hard-drawn tables and source-side
 truncation are not reconstructed. Literal Markdown already present in the source
 is intentionally unchanged.
 
 The visible preview refreshes every second, including when agent status is
-unchanged. Hiding it stops pane reads. A read failure shows `Preview unavailable`;
-Enter still opens the original pane. Previewing never sends input, changes focus,
-resizes the source pane, or acknowledges a reminder. Glow is not used by the picker.
+unchanged. Hiding it stops pane reads. Attach is exclusive and never uses
+`--takeover`; if another client holds the terminal, or attach/read fails, the
+preview shows `Preview unavailable`. Enter still opens the original pane.
+Previewing never sends input, changes focus, resizes splits, or acknowledges a
+reminder. Terminal attach behavior has been checked with Herdr 0.9.5. Glow is not
+used by the picker.
 
 ## Reminders
 

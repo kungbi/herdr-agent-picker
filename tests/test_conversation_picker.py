@@ -58,6 +58,12 @@ if args == ['api', 'snapshot']:
                    for number, kind in ((1, 'hermes'), (2, 'codex'))],
         'workspaces': [dict(workspace_id='w1', label='Fixtures')],
         'tabs': [dict(tab_id='w1:t1', label='Test')]}}
+elif args[:2] == ['pane', 'get']:
+    result = {'pane': {'terminal_id': args[2]}}
+elif args[:2] == ['terminal', 'attach']:
+    import time
+    print('\\x1b[2J', flush=True)
+    while True: time.sleep(1)
 elif args[:2] == ['pane', 'read']:
     assert args[3:] == ['--source', 'recent-unwrapped', '--lines', '30', '--format', 'ansi']
     sys.stdout.write(json.loads(Path(os.environ['SNAPSHOTS']).read_text())[args[2]])
@@ -177,7 +183,7 @@ print(json.dumps({'result': result}))
                 drain()
             assert exited, 'Picker failed to close'
             assert not focus.exists(), 'Preview verification changed focus'
-            assert all(line == 'api snapshot' or line.startswith('pane read ')
+            assert all(line == 'api snapshot' or line.startswith(('pane read ', 'pane get ', 'terminal attach '))
                        for line in calls.read_text().splitlines()), calls.read_text()
             print(f'PASS: native Codex/Hermes parity at {columns} columns; real fzf, synthetic terminal snapshots')
         finally:

@@ -36,6 +36,12 @@ elif sys.argv[1:3] == ['agent', 'focus']:
     result = {}
 elif sys.argv[1:3] == ['agent', 'get']:
     result = {'agent': {'agent': 'demo'}}
+elif sys.argv[1:3] == ['pane', 'get']:
+    result = {'pane': {'terminal_id': sys.argv[3]}}
+elif sys.argv[1:3] == ['terminal', 'attach']:
+    import time
+    print('\\x1b[2J', flush=True)
+    while True: time.sleep(1)
 elif sys.argv[1:3] == ['pane', 'read']:
     print('PREVIEW for ' + sys.argv[3])
     raise SystemExit(0)

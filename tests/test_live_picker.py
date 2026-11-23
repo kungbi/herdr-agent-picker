@@ -52,6 +52,11 @@ elif args[:2] == ['agent', 'focus']:
     result = {}
 elif args[:2] == ['agent', 'get']:
     result = {'agent': {'agent': 'claude'}}
+elif args[:2] == ['pane', 'get']:
+    result = {'pane': {'terminal_id': args[2]}}
+elif args[:2] == ['terminal', 'attach']:
+    print('\\x1b[2J', flush=True)
+    while True: time.sleep(1)
 elif args[:2] == ['pane', 'read']:
     print('PREVIEW for ' + args[2])
     raise SystemExit(0)

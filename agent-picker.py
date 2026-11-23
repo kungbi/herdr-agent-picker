@@ -6,7 +6,12 @@ from datetime import datetime
 import fcntl
 import os
 from pathlib import Path
+import pty
 import re
+import select
+import signal
+import struct
+import termios
 import shlex
 import shutil
 import sqlite3
@@ -82,8 +87,95 @@ def preview(pane_id):
                       flags=re.MULTILINE)
         # Let fzf render ANSI styles; stripping ESC leaves visible code fragments.
         sys.stdout.write(text)
+        return True
     except (OSError, ValueError, KeyError, RuntimeError, subprocess.SubprocessError):
         print('Preview unavailable')
+        return False
+
+
+def attach_guard(terminal_id, control_fd):
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+    attached = subprocess.Popen([HERDR, 'terminal', 'attach', terminal_id])
+    try:
+        while attached.poll() is None:
+            if select.select([control_fd], [], [], 0.1)[0] and not os.read(control_fd, 1):
+                break
+    finally:
+        if attached.poll() is None:
+            attached.terminate()
+            try:
+                attached.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                attached.kill()
+                attached.wait()
+        os.close(control_fd)
+
+
+def live_preview(pane_id, lock_path):
+    if not pane_id or pane_id == '@section':
+        return
+    try:
+        columns = int(os.environ['FZF_PREVIEW_COLUMNS'])
+        lines = int(os.environ['FZF_PREVIEW_LINES'])
+        if not (0 < columns <= 65535 and 0 < lines <= 65535):
+            raise ValueError('Invalid preview grid')
+        with open(lock_path, 'a') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            terminal_id = request('pane', 'get', pane_id)['pane']['terminal_id']
+            master, slave = pty.openpty()
+            control_read, control_write = os.pipe()
+            attached = None
+            try:
+                fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', lines, columns, 0, 0))
+                # A separate session gets the preview grid; the pipe and lock protect teardown.
+                attached = subprocess.Popen(
+                    [sys.executable, str(Path(__file__).resolve()), '--attach-guard', terminal_id, str(control_read)],
+                    stdin=slave, stdout=slave, stderr=slave,
+                    pass_fds=(control_read, lock.fileno()), start_new_session=True,
+                )
+                os.close(control_read)
+                control_read = None
+                os.close(slave)
+                slave = None
+                # The attach emits terminal setup before the server accepts it.
+                data = b''
+                deadline = time.monotonic() + 3
+                while b'\x1b[2J' not in data:
+                    if attached.poll() is not None or time.monotonic() >= deadline:
+                        raise RuntimeError('Terminal attachment unavailable')
+                    if select.select([master], [], [], 0.1)[0]:
+                        data = (data + os.read(master, 65536))[-65536:]
+                while True:
+                    sys.stdout.write('\x1b[2J\x1b[H')
+                    ok = preview(pane_id)
+                    sys.stdout.flush()
+                    if not ok:
+                        return
+                    deadline = time.monotonic() + 1
+                    while time.monotonic() < deadline:
+                        if attached.poll() is not None:
+                            raise RuntimeError('Terminal attachment ended')
+                        if select.select([master], [], [], min(0.1, max(0, deadline - time.monotonic())))[0]:
+                            os.read(master, 65536)
+            finally:
+                os.close(control_write)
+                if control_read is not None:
+                    os.close(control_read)
+                if attached is not None and attached.poll() is None:
+                    try:
+                        attached.wait(timeout=3)
+                    except subprocess.TimeoutExpired:
+                        try:
+                            attached.terminate()
+                            attached.wait(timeout=3)
+                        except subprocess.TimeoutExpired:
+                            os.killpg(attached.pid, signal.SIGKILL)
+                            attached.wait()
+                if slave is not None:
+                    os.close(slave)
+                os.close(master)
+    except (OSError, ValueError, KeyError, RuntimeError, subprocess.SubprocessError):
+        print('Preview unavailable', flush=True)
 
 
 def status_label(status):
@@ -224,7 +316,7 @@ def refresh_action(path):
             return ""
         previous = path.read_text()
         if refresh_rows(path) == previous:
-            return "refresh-preview"
+            return ""
         return f"reload-sync:cat {shlex.quote(str(path))}"
 
 
@@ -263,7 +355,7 @@ def main():
             sys.executable, str(Path(__file__).resolve()), "--refresh", str(cache),
         ])
         reminder_command = shlex.join([sys.executable, str(Path(__file__).with_name('agent_reminders.py').resolve())])
-        preview_command = shlex.join([sys.executable, str(Path(__file__).resolve()), '--preview']) + ' {1}'
+        preview_command = shlex.join([sys.executable, str(Path(__file__).resolve()), '--live-preview', str(cache.with_suffix('.preview-lock'))]) + ' {1}'
         search_keys = 'j,k,a,r,p,q,/,1,2,3,4,5,6,7,8,9,ctrl-d,ctrl-u'
         choice = subprocess.run(
             [FZF, "--ansi", "--color=dark,fg+:-1", "--sync", "--no-input", "--no-sort", "--no-multi", "--layout=reverse",
@@ -274,7 +366,7 @@ def main():
              "--header=1-9/Enter: focus  Ctrl+D/U: jump  /: search  p: preview  a/r: alarm  Esc: back/close  q: close",
              f"--preview={preview_command}", "--preview-window=right:60%:wrap-word",
              f"--bind=/:show-input+clear-query+disable-raw+unbind({search_keys})",
-             "--bind=p:toggle-preview,q:abort",
+             "--bind=p:toggle-preview,q:abort,resize:refresh-preview",
              f"--bind=j:down-match,k:up-match,down:down-match,up:up-match,ctrl-j:down-match,ctrl-k:up-match,load:pos({selected_index})+unbind(load)",
              f'--bind=esc:transform:if [ "$FZF_INPUT_STATE" = hidden ]; then printf abort; '
              f"else printf '%s' 'change-query(!^──)+enable-raw+rebind({search_keys})'; fi",
@@ -309,7 +401,12 @@ def main():
 
 if __name__ == "__main__":
     try:
-        if len(sys.argv) == 3 and sys.argv[1] == "--preview":
+        if len(sys.argv) == 4 and sys.argv[1] == '--attach-guard':
+            attach_guard(sys.argv[2], int(sys.argv[3]))
+        elif len(sys.argv) == 4 and sys.argv[1] == '--live-preview':
+            signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+            live_preview(sys.argv[3], sys.argv[2])
+        elif len(sys.argv) == 3 and sys.argv[1] == "--preview":
             preview(sys.argv[2])
         elif len(sys.argv) == 3 and sys.argv[1] == "--rows":
             # Keep already-open popups compatible until they are reopened.
