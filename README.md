@@ -22,7 +22,9 @@ output are synthetic; no live Herdr sessions or notifications were used.
 - Press `/` to search by task, workspace, tab, or agent name. Use arrow keys to
   navigate results and Enter to focus. Esc clears the search and returns to normal
   navigation without closing the picker, even with an empty query or no matches.
-  Press Esc or `q` in normal mode to close; while searching, `q` is ordinary text.
+  Press Esc or `q` in normal mode to close; while searching, `q` and `i` are ordinary text.
+- Press `i` in normal mode to compose a one-line message to the selected agent.
+  The bottom row shows the captured recipient; Enter sends, Esc cancels.
 - Preview opens automatically on the right, using 60% of the popup width.
   Codex, Hermes and other agents use the same colored terminal snapshot path:
   their own rendered output, not a second Markdown renderer or rebuilt chat.
@@ -136,6 +138,38 @@ Previewing never sends input, changes focus, resizes splits, or acknowledges a
 reminder. The baseline attachment protocol was checked with Herdr 0.9.5; this Rust port
 validates it with isolated fake attachments. Glow is not used by the picker.
 
+## Send a message without leaving the picker
+
+Press `i` outside search to open the bottom composer. Its recipient shows the pane,
+foreground PID and agent name/kind captured when it opens. The list and preview stay
+visible; the preview keeps refreshing, and pending list reloads resume on return.
+Changing status, sort order
+or focus flags cannot redirect the message. Enter submits non-empty text literally
+plus one Enter using a single `herdr agent prompt` request, then returns to the
+picker. Esc discards the draft with zero sends. Neither action focuses or closes
+an agent pane. Backspace removes one Unicode character; Korean UTF-8 is supported.
+
+Bracketed paste accepts one line, preserving spaces and shell punctuation exactly.
+Multiline, control-character, malformed UTF-8 and oversized pastes are rejected
+as a whole; input is limited to 16 KiB. Queued input after an unbracketed Enter is
+rejected to avoid sending a pasted first line or leaking subsequent picker keys.
+Use a terminal with bracketed paste support: a single unbracketed pasted line
+ending in Enter is indistinguishable from typing that line and pressing Enter.
+
+Before sending, the picker rechecks the captured terminal, agent session/name/kind
+and foreground process identity. Missing identity data, a shell or unrelated
+foreground process, or a gone/replaced agent prevents submission. It uses argv,
+never shell interpolation or raw pane-input fallback. Herdr can reject a blocked
+agent. Errors appear on the bottom row; Enter/Esc returns to the picker. A failed
+or timed-out submission may have partially arrived and is **never retried**.
+
+The installed Herdr API has no atomic expected-identity argument for `agent prompt`.
+Revalidation and agent-specific server validation reduce risk but cannot eliminate
+the race between the final identity check and server delivery. Foreground detection
+is conservative and may reject unfamiliar executable wrappers. The contract was
+checked against the installed CLI/schema; real agent delivery is not exercised by
+the isolated regression tests.
+
 ## Reminders
 
 Select an agent and press `a` to schedule a reminder to revisit it, regardless of
@@ -239,6 +273,8 @@ HERDR_AGENT_PICKER_TEST_BINARY="$PWD/target/release/herdr-agent-picker" \
 Fixtures use synthetic agents, an isolated state directory and fake Herdr
 executables. They never change live panes or send desktop notifications. Coverage
 includes keyboard/search behavior, live reload latency and cursor identity,
+the bottom composer (literal argv, paste/UTF-8, cancellation, immutable recipients,
+gone/replaced agents, partial failures and timeouts without retries),
 completion migration and hooks, existing reminder schema and server scope,
 worker recovery/singleton shutdown, dialogs, ANSI/frame preservation, real-fzf
 preview resizing/releasing and forced preview-process death. Notification argument

@@ -17,10 +17,11 @@ COMMON = ('LICENSE', 'README.md', 'CHANGELOG.md', 'herdr-plugin.toml', 'run',
 SOURCE = ('Cargo.toml', 'Cargo.lock', 'scripts/build_package.py',
           'tests/run_rust_regressions.py', 'tests/rust_support.py',
           'tests/test_runtime.py', 'tests/test_picker.py', 'tests/test_live_picker.py',
+          'tests/test_composer.py',
           'tests/test_preview_resize.py', 'tests/test_conversation_picker.py',
           'tests/test_reminder_picker.py', 'tests/test_package.py',
           'src/main.rs', 'src/config.rs', 'src/util.rs', 'src/completion.rs', 'src/picker.rs',
-          'src/preview.rs', 'src/reminders.rs', 'src/dialog.rs', 'src/sqlite.rs')
+          'src/preview.rs', 'src/reminders.rs', 'src/dialog.rs', 'src/composer.rs', 'src/sqlite.rs')
 
 
 def host_target():

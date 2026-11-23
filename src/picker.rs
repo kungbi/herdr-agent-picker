@@ -294,12 +294,17 @@ pub fn main() -> Result<()> {
         ]),
         quote(origin.as_deref().unwrap_or(""))
     );
-    let search = "j,k,a,r,p,q,/,1,2,3,4,5,6,7,8,9,ctrl-d,ctrl-u";
+    let search = "j,k,i,a,r,p,q,/,1,2,3,4,5,6,7,8,9,ctrl-d,ctrl-u";
     let mut args=vec!["--ansi".into(),
-        "--no-tty-default".into(),"--color=dark,fg+:-1".into(),"--sync".into(),"--no-input".into(),"--no-sort".into(),"--no-multi".into(),"--layout=reverse".into(),"--track".into(),"--id-nth=1".into(),"--raw".into(),"--query=!^──".into(),"--with-shell=/bin/sh -c".into(),"--delimiter=\t".into(),"--with-nth=2..".into(),"--border=rounded".into(),"--border-label= Agents ".into(),"--header=1-9/Enter: focus  Ctrl+D/U: jump  /: search  p: preview  a/r: alarm  Esc: back/close  q: close".into(),format!("--preview={preview}"),"--preview-window=right:60%:wrap-word:follow".into(),format!("--bind=/:show-input+clear-query+disable-raw+unbind({search})"),"--bind=p:toggle-preview,q:abort,resize:refresh-preview".into(),format!("--bind=j:down-match,k:up-match,down:down-match,up:up-match,ctrl-j:down-match,ctrl-k:up-match,load:pos({selected})+unbind(load)"),format!("--bind=esc:transform:if [ \"$FZF_INPUT_STATE\" = hidden ]; then printf abort; else printf '%s' 'change-query(!^──)+enable-raw+rebind({search})'; fi"),"--bind=esc:+hide-input".into(),"--bind=enter:transform:if [ -n {1} ] && [ {1} != '@section' ]; then printf accept; fi".into(),"--bind=double-click:transform:if [ -n {1} ] && [ {1} != '@section' ]; then printf accept; fi".into(),format!("--bind=every(1):bg-transform:{reload}"),format!("--bind=a:execute-silent:{reminder} menu {{1}}"),format!("--bind=r:execute-silent:{reminder} list"),"--bind=a:+clear-screen,r:+clear-screen".into()];
+        "--no-tty-default".into(),"--color=dark,fg+:-1".into(),"--sync".into(),"--no-input".into(),"--no-sort".into(),"--no-multi".into(),"--layout=reverse".into(),"--track".into(),"--id-nth=1".into(),"--raw".into(),"--query=!^──".into(),"--with-shell=/bin/sh -c".into(),"--delimiter=\t".into(),"--with-nth=2..".into(),"--border=rounded".into(),"--border-label= Agents ".into(),"--header=1-9/Enter: focus  Ctrl+D/U: jump  /: search  p: preview  i: compose  a/r: alarm  Esc: back/close  q: close".into(),format!("--preview={preview}"),"--preview-window=right:60%:wrap-word:follow".into(),format!("--bind=/:show-input+clear-query+disable-raw+unbind({search})"),"--bind=p:toggle-preview,q:abort,resize:refresh-preview".into(),format!("--bind=j:down-match,k:up-match,down:down-match,up:up-match,ctrl-j:down-match,ctrl-k:up-match,load:pos({selected})+unbind(load)"),format!("--bind=esc:transform:if [ \"$FZF_INPUT_STATE\" = hidden ]; then printf abort; else printf '%s' 'change-query(!^──)+enable-raw+rebind({search})'; fi"),"--bind=esc:+hide-input".into(),"--bind=enter:transform:if [ -n {1} ] && [ {1} != '@section' ]; then printf accept; fi".into(),"--bind=double-click:transform:if [ -n {1} ] && [ {1} != '@section' ]; then printf accept; fi".into(),format!("--bind=every(1):bg-transform:{reload}"),format!("--bind=a:execute-silent:{reminder} menu {{1}}"),format!("--bind=r:execute-silent:{reminder} list"),"--bind=a:+clear-screen,r:+clear-screen".into()];
     for n in 1..=9 {
         args.push(format!("--bind={n}:transform:if [ \"$FZF_MATCH_COUNT\" -ge {n} ]; then printf '%s' 'pos(1){}+accept'; fi","+down-match".repeat(n)));
     }
+    args.push(format!(
+        "--bind=i:execute-silent:{} {{1}}",
+        shell(&[&exe, "--compose"])
+    ));
+    args.push("--bind=i:+clear-screen".into());
     for (key, dir) in [("ctrl-d", "down"), ("ctrl-u", "up")] {
         args.push(format!(
             "--bind={key}:{}",

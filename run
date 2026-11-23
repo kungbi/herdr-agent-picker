@@ -25,7 +25,7 @@ case "$mode" in
         exec "$(tool_python)" tests/run_rust_regressions.py "$@"
         ;;
     package) exec "$(tool_python)" "$plugin_root/scripts/build_package.py" "$@" ;;
-    picker|record|alarms|check|worker|menu|list|--version|--preview|--live-preview|--rows|--refresh) ;;
+    picker|record|alarms|check|worker|menu|list|--version|--preview|--live-preview|--rows|--refresh|--compose) ;;
     *) printf 'Unknown command: %s\n' "$mode" >&2; exit 2 ;;
 esac
 if [ -x "$plugin_root/bin/herdr-agent-picker" ]; then
