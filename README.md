@@ -1,6 +1,6 @@
 # Herdr Agent Picker
 
-**[Download v0.1.0](https://github.com/kungbi/herdr-agent-picker/releases/tag/v0.1.0)** · Native Rust plugin for macOS and Linux.
+**[Download v0.2.0](https://github.com/kungbi/herdr-agent-picker/releases/tag/v0.2.0)** · Native Rust plugin for macOS and Linux.
 
 A compact, keyboard-driven agent popup for Herdr.
 
