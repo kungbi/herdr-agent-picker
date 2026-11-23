@@ -334,6 +334,14 @@ pub fn run(
                 notice_refresh = Instant::now() + Duration::from_millis(100);
             }
         }
+        // shortcut: gaps over 40ms can split a key sequence; use framed input if available.
+        if !normal_sequence.is_empty()
+            && events[0].revents == 0
+            && normal_escape.elapsed() >= Duration::from_millis(40)
+        {
+            master.write_all(&normal_sequence)?;
+            normal_sequence.clear();
+        }
         if events[0].revents != 0 {
             let mut byte = [0];
             if tty.tty.read(&mut byte)? == 0 {
@@ -349,21 +357,25 @@ pub fn run(
                 // pasted ESC cannot return to fzf and leak the remaining bytes.
                 keys.forward(byte[0], &mut std::io::sink())?;
             } else {
-                if normal_escape.elapsed() >= Duration::from_millis(40) {
-                    normal_sequence.clear();
-                }
                 let literal_i = byte[0] == b'i' && !normal_paste && normal_sequence.is_empty();
-                master.write_all(&byte)?;
                 if byte[0] == 27 {
+                    if !normal_sequence.is_empty() {
+                        master.write_all(&normal_sequence)?;
+                    }
                     normal_sequence = vec![27];
                     normal_escape = Instant::now();
                 } else if !normal_sequence.is_empty() {
                     normal_sequence.push(byte[0]);
+                    normal_escape = Instant::now();
                     if (normal_sequence.len() == 2 && !b"[O".contains(&byte[0]))
                         || (normal_sequence.len() >= 3 && (0x40..=0x7e).contains(&byte[0]))
+                        || normal_sequence.len() >= 4096
                     {
+                        master.write_all(&normal_sequence)?;
                         normal_sequence.clear();
                     }
+                } else {
+                    master.write_all(&byte)?;
                 }
                 normal_tail.push(byte[0]);
                 if normal_tail.len() > 6 {

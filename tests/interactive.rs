@@ -138,26 +138,54 @@ fn exercise(case: &str, f: &Fixture, p: &mut Pty, data: &mut Value) {
         };
         p.clear();
         let deadline = std::time::Instant::now() + WAIT;
-        while !visible(&screen, "LIVE ready") {
+        while !visible(&screen, "LIVE ready") || !visible(&screen, "PREVIOUS_ROW_11") {
             assert!(
                 std::time::Instant::now() < deadline,
                 "initial frame did not settle"
             );
             screen.pump(p);
         }
+        assert!(!visible(&screen, "PREVIOUS_ROW_10"));
+        let mut trace = Vec::new();
+        for byte in b"\x1b[1;2A" {
+            p.send(&[*byte]);
+            p.drain(Duration::from_millis(5));
+            trace.extend_from_slice(&p.output);
+            screen.feed(&p.output);
+            p.clear();
+        }
         let deadline = std::time::Instant::now() + WAIT;
-        while visible(&screen, "LIVE ready") || !visible(&screen, "PREVIOUS_ROW_") {
+        while visible(&screen, "LIVE ready") || !visible(&screen, "PREVIOUS_ROW_10") {
             assert!(
                 std::time::Instant::now() < deadline,
-                "preview did not scroll"
+                "preview did not scroll; frame: {:?}; events: {:?}; output: {:?}",
+                screen
+                    .frame
+                    .iter()
+                    .map(|r| r.iter().collect::<String>())
+                    .collect::<Vec<_>>(),
+                f.events(),
+                String::from_utf8_lossy(&trace)
             );
-            p.send(b"\x1b[1;2A");
-            screen.pump(p);
+            p.drain(Duration::from_millis(30));
+            trace.extend_from_slice(&p.output);
+            screen.feed(&p.output);
+            p.clear();
         }
     }
     p.clear();
     press(p, if case == "burst" { b"ix" } else { b"i" });
     p.wait_until(|| calls(f, ["pane", "process-info"]) > 0, WAIT);
+    if case == "scrolled_entry" {
+        assert!(f
+            .calls()
+            .iter()
+            .any(|call| call == &["pane", "process-info", "--pane", "w1:p1"]));
+        assert!(f
+            .events()
+            .iter()
+            .any(|event| event.starts_with("attach term-1 ")));
+    }
     p.wait_for(b"Esc returns to picker");
     // A single byte must arrive while no Enter has ever been typed.
     if case != "burst" {
