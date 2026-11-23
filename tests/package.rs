@@ -146,43 +146,19 @@ fn zip_modes(path: &Path) -> BTreeMap<String, u32> {
     modes
 }
 fn source_check(extracted: &Path, f: &Fixture) {
-    // Reuse Cargo's already-built dependencies. Calling Cargo from a Cargo test
-    // would recurse into its locks; rustc directly typechecks the extracted source.
-    let deps = std::env::current_exe()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .to_path_buf();
-    let mut c = Command::new(std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into()));
-    c.arg("--edition=2021")
-        .arg("--emit=metadata")
-        .arg("--crate-name=archive_validation")
-        .arg(extracted.join("src/main.rs"))
-        .arg("-o")
-        .arg(f.path("source.rmeta"))
-        .arg("-L")
-        .arg(format!("dependency={}", deps.display()))
-        .env("CARGO_PKG_VERSION", env!("CARGO_PKG_VERSION"));
-    for name in ["libc", "regex", "serde_json", "sha2", "unicode_width"] {
-        let prefix = format!("lib{name}-");
-        let mut libs: Vec<PathBuf> = fs::read_dir(&deps)
-            .unwrap()
-            .filter_map(Result::ok)
-            .map(|e| e.path())
-            .filter(|p| {
-                p.file_name()
-                    .unwrap()
-                    .to_string_lossy()
-                    .starts_with(&prefix)
-                    && p.extension() == Some(OsStr::new("rlib"))
-            })
-            .collect();
-        libs.sort_by_key(|p| fs::metadata(p).unwrap().modified().unwrap());
-        c.arg("--extern").arg(format!(
-            "{name}={}",
-            libs.pop().expect("cached Cargo dependency").display()
-        ));
-    }
+    // Validate the extracted manifest and lockfile too. A separate target dir
+    // avoids outer Cargo build locks and any dependence on its artifact layout.
+    // `check` compiles without recursively executing this archive test.
+    let mut c = Command::new(env!("CARGO"));
+    c.current_dir(extracted)
+        .args([
+            "check",
+            "--locked",
+            "--offline",
+            "--all-targets",
+            "--target-dir",
+        ])
+        .arg(f.path("source-target"));
     checked(c);
 }
 #[test]

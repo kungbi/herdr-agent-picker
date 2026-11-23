@@ -1,4 +1,4 @@
-//! Cargo-only fixture executable: integration targets are never cargo-installed.
+//! Test fixture example: excluded from default cargo install and release builds.
 //! Every accepted command is synthetic; unknown commands (including notifications) fail.
 use serde_json::{json, Value};
 use std::{
@@ -56,7 +56,7 @@ fn snapshot(mode: &str, d: &Value) -> Value {
 }
 fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
-    // Cargo may pass test filters or libtest flags. Only fixtures opt into RPC mode.
+    // Only fixtures opt into RPC mode.
     if args.is_empty() || env::var_os("FAKE_MODE").is_none() {
         return;
     }

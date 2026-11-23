@@ -1,7 +1,8 @@
 # Native Rust validation
 
 The entire former `tests/*.py` integration/regression harness and its fake Herdr
-are now native Rust integration targets discovered by `cargo test --locked`.
+are now native Rust integration suites and a fixture example used by
+`cargo test --locked`.
 The [scenario parity audit](scenario-parity.md) was captured before removing the
 Python files and links each original scenario and assertion to its replacement.
 The committed composer implementation is unchanged by this harness migration.
@@ -20,6 +21,7 @@ With locked dependencies already cached:
 
 ```sh
 export CARGO_NET_OFFLINE=true
+export CARGO_TARGET_DIR="$(mktemp -d)"
 cargo fmt --check
 cargo check --locked
 cargo clippy --locked --all-targets -- -D warnings
@@ -32,19 +34,24 @@ git diff --check
 `sh ./run test` forwards directly to `cargo test --locked`, including additional
 Cargo arguments. Cargo supplies the application binary path to tests, with no
 prebuilt release requirement. All eight integration suites run by default;
-none is ignored. To filter a suite from a clean checkout, first build all test
-targets so its Rust fake is available:
+none is ignored. Filter a suite directly from a clean checkout; its Rust fake
+builds automatically on first use:
 
 ```sh
-cargo test --locked --no-run
 cargo test --locked --test composer paste
 cargo test --locked --test live_picker slow_navigation
 ```
 
-The integration target `fake_herdr` has `harness = false`; its no-argument Cargo
-invocation exits successfully, and fixture RPC invocations implement the fake.
-It is not a `[[bin]]`, is never installed by Cargo and is excluded from native
-archives. Source archives include its Rust source and the full harness.
+The `fake_herdr` fixture is an explicitly declared `[[example]]`, not a `[[bin]]`.
+Each integration executable builds it once with offline, locked Cargo, using a
+shared, separate target directory beside the Cargo-supplied application path.
+Cargo handles cache freshness and reports the actual executable in its documented
+[JSON artifact output](https://doc.rust-lang.org/cargo/reference/external-tools.html#artifact-messages).
+Tests never scan executable siblings or choose artifacts by timestamp. This works
+with filtered suites, relocated test executables and custom `CARGO_TARGET_DIR`
+values. Default `cargo install` and release builds exclude examples; native
+archives contain only the application. Source archives include the fake's Rust
+source and the full harness.
 
 ## Behavior and isolation
 
@@ -80,7 +87,7 @@ require one delivery attempt on partial failure or timeout.
 ## Package verification
 
 ```sh
-sh ./run package
+sh ./run package --binary "${CARGO_TARGET_DIR:-target}/release/herdr-agent-picker"
 sh ./run package --source
 (cd dist && shasum -a 256 -c SHA256SUMS-aarch64-apple-darwin)
 (cd dist && shasum -a 256 -c SHA256SUMS-source)
@@ -90,10 +97,12 @@ Use the checksum filename for the actual host target. Rust tests compare both
 native and source tar.gz/zip outputs byte for byte across two builds, inspect
 independent exact member allowlists, every effective payload, timestamps, modes,
 ownership, checksums and ZIP CRCs. The extracted native launcher runs with Python
-settings pointing to nonexistent paths. Source typechecking uses `rustc` with
-the dependency rlibs Cargo already built; tests never start Cargo recursively.
-A standalone offline Cargo check of the extracted source is also part of local
-final verification, after the outer test command has completed.
+settings pointing to nonexistent paths. Extracted source runs
+`cargo check --locked --offline --all-targets` in its own fresh target directory.
+This checks the extracted manifest, lockfile, application, fixture example and
+integration suites without reusing outer build artifacts or executing tests
+recursively. Both nested Cargo commands use separate target directories to avoid
+contending for the outer Cargo build lock.
 
 Archive reproducibility means identical archives for identical inputs. It does
 not claim identical compiler outputs across hosts. Native archives contain only
@@ -115,6 +124,14 @@ CI runs the same default Cargo suite, formatting, check, clippy and release buil
 on macOS and Linux. Dependency/fzf provisioning occurs before offline validation
 in CI. Linux CI is configured; it has not been triggered from this checkout.
 No commit, push, merge, tag, release or global installation is part of validation.
+
+PR3 revalidation used a fresh temporary `CARGO_TARGET_DIR` for the full offline
+suite and build checks. A second empty target directory passed a filtered picker
+test without a preparatory helper build. Picker and package test executables also
+passed from separate `debug/build/herdr-agent-picker/<test>/out` directories with
+newer decoy fake executables and invalid dependency rlibs beside them, while the
+runtime `CARGO_TARGET_DIR` pointed elsewhere. These checks exercise relocation
+and stale-artifact handling without changing coverage or lint levels.
 
 Real Herdr attachment and desktop notification presentation/sound remain outside
 these synthetic tests. The existing preview limitations for complex joined emoji

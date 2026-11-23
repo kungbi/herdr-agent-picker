@@ -18,10 +18,10 @@ The 41 interactive picker scenarios check initial preview, exact Herdr preview a
 
 The 14 live scenarios check data and shortcut changes, cursor preservation, completion acknowledgement, empty-list behavior, polling shutdown, and invalid-snapshot recovery. The three immediate input cases require focus within 700 ms of sending the key during a 1.5-second refresh, and require the picker to exit within two seconds after focus.
 
-Build the fake Herdr target once, then run a single scenario with Cargo's test filter.
+Run a single scenario with Cargo's test filter; the fake Herdr example builds
+automatically offline on first fixture use in a separate target directory.
 
 ```sh
-cargo test --test fake_herdr --no-run
 cargo test --test picker search_escape_preview
 cargo test --test live_picker slow_navigation
 ```

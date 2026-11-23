@@ -58,11 +58,10 @@ extracted launcher that runs with invalid Python settings. Added checks compare
 every effective TAR/ZIP payload with its input, reject duplicate/nonregular or
 unsafe members, and check deterministic timestamps, ownership and ZIP modes.
 
-Extracted Rust source is typechecked directly with `rustc --emit=metadata` and
-Cargo's already-built dependency rlibs. This preserves the old extracted-source
-compile check without invoking Cargo recursively or competing for its locks.
-The standalone validation procedure also runs offline Cargo against extracted
-source after the outer Cargo test has exited.
+Extracted Rust source passes `cargo check --locked --offline --all-targets`
+in a fresh, separate target directory. This validates the extracted manifest,
+lockfile, application and full harness without scanning cached dependency rlibs,
+competing for the outer Cargo build lock or executing tests recursively.
 
 `packaging_rejects_bad_tag_and_script_binary` retains mismatched-tag rejection and
 rejection of a script masquerading as a native binary.
@@ -80,9 +79,13 @@ The Rust fake preserves all old response/error/delay/content modes and logs
 complete argv as JSON. Preview size, attachment PID and release events are
 recorded. It accepts only enumerated synthetic commands, validates prompt/read/
 attach argv, and rejects all other commands, including notifications and terminal
-input. The fake is an explicitly declared Cargo **test target**, never a binary
-target: `cargo install` and native distributions contain only the application.
-Source archives carry its source so the full harness is reproducible.
+input. The fake is an explicitly declared Cargo **example target**, built on
+first fixture use with offline, locked Cargo in a separate shared target
+directory. Tests read its executable path from Cargo's JSON artifact output,
+independent of test executable layout and cached artifact timestamps. Filtered
+suites need no preparatory build. Default `cargo install`, release builds and
+native distributions contain only the application. Source archives carry the
+fake's source so the full harness is reproducible.
 
 The former optional environment selectors (`HERDR_AGENT_PICKER_TEST_CASE` and
 `HERDR_COMPOSER_TEST_CASE`) and their unknown-case assertions are replaced by

@@ -58,28 +58,46 @@ pub fn until(mut test: impl FnMut() -> bool, timeout: Duration) {
     }
 }
 pub fn fake_binary() -> PathBuf {
-    let dir = std::env::current_exe()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .to_path_buf();
-    let mut candidates: Vec<_> = fs::read_dir(dir)
-        .unwrap()
-        .filter_map(Result::ok)
-        .map(|e| e.path())
-        .filter(|p| {
-            p.file_name()
+    static BINARY_PATH: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    BINARY_PATH
+        .get_or_init(|| {
+            // Use the supplied application path only to choose a shared cache location.
+            // A separate target dir avoids the outer Cargo invocation's build lock;
+            // Cargo handles freshness and reports the executable's actual location.
+            let target = Path::new(BINARY).with_file_name("herdr-agent-picker-test-support");
+            let mut c = Command::new(env!("CARGO"));
+            c.current_dir(ROOT)
+                .args([
+                    "build",
+                    "--locked",
+                    "--offline",
+                    "--example",
+                    "fake_herdr",
+                    "--message-format=json",
+                    "--target-dir",
+                ])
+                .arg(target);
+            let o = output(c, Duration::from_secs(180));
+            assert!(
+                o.status.success(),
+                "build fake_herdr:\n{}\n{}",
+                String::from_utf8_lossy(&o.stdout),
+                String::from_utf8_lossy(&o.stderr)
+            );
+            String::from_utf8(o.stdout)
                 .unwrap()
-                .to_string_lossy()
-                .starts_with("fake_herdr-")
-                && p.extension().is_none()
-                && fs::metadata(p).unwrap().permissions().mode() & 0o111 != 0
+                .lines()
+                .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+                .find_map(|m| {
+                    (m["reason"] == "compiler-artifact"
+                        && m["target"]["name"] == "fake_herdr"
+                        && m["target"]["kind"] == json!(["example"]))
+                    .then(|| m["executable"].as_str().map(PathBuf::from))
+                    .flatten()
+                })
+                .expect("Cargo must report the fake_herdr example executable")
         })
-        .collect();
-    candidates.sort_by_key(|p| fs::metadata(p).unwrap().modified().unwrap());
-    candidates
-        .pop()
-        .expect("cargo must build the fake_herdr integration target")
+        .clone()
 }
 pub struct Fixture {
     pub root: PathBuf,
@@ -386,7 +404,7 @@ impl Pty {
                     &mut slave,
                     std::ptr::null_mut(),
                     std::ptr::null_mut(),
-                    &mut size,
+                    std::ptr::addr_of_mut!(size),
                 )
             },
             0

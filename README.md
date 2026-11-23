@@ -285,10 +285,13 @@ construction and retry/acknowledgement logic have native unit coverage; actual O
 notification presentation and real Herdr attachment are not automated here.
 
 The [scenario parity map](docs/scenario-parity.md) inventories every former
-Python scenario and assertion. The fake Herdr is a Cargo test target, so it is
-never installed or shipped in native packages. Extracted source is typechecked
-without recursive Cargo calls; PTY cases serialize within each suite for stable
-latency checks. See [validation details](docs/rust-port-validation.md).
+Python scenario and assertion. The fake Herdr is a fixture example, built on
+demand offline in a separate Cargo target directory. Tests use Cargo's reported
+executable path; default installation, release builds and native packages contain
+only the application. Extracted source passes an offline, locked Cargo check of
+all targets in its own target directory, without executing tests recursively.
+PTY cases serialize within each suite for stable latency checks. See
+[validation details](docs/rust-port-validation.md).
 
 Python packaging tooling creates deterministic `.tar.gz`/`.zip` archives and
 per-target checksums in `dist/`, using explicit allowlists. Local settings,
