@@ -12,7 +12,8 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 COMMON = ('LICENSE', 'README.md', 'CHANGELOG.md', 'herdr-plugin.toml', 'run',
-          'docs/rust-port-validation.md', 'docs/images/agent-picker-demo.png', 'docs/images/agent-picker-demo.svg')
+          'docs/rust-port-validation.md', 'docs/images/agent-picker-demo.png', 'docs/images/agent-picker-demo.svg',
+          'docs/images/agent-picker-preview.png', 'docs/images/agent-picker-alarm.png')
 SOURCE = ('Cargo.toml', 'Cargo.lock', 'scripts/build_package.py',
           'tests/run_rust_regressions.py', 'tests/rust_support.py',
           'tests/test_runtime.py', 'tests/test_picker.py', 'tests/test_live_picker.py',
