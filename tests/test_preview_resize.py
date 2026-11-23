@@ -1,10 +1,12 @@
 """Exercise preview PTY ownership through real fzf and a fake Herdr."""
 import errno
+import codecs
 import fcntl
 import json
 import os
 from pathlib import Path
 import pty
+import re
 import select
 import shlex
 import signal
@@ -13,6 +15,7 @@ import sys
 import tempfile
 import termios
 import time
+import unicodedata
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -22,6 +25,89 @@ from rust_support import BINARY
 def alive(pid):
     try: os.kill(int(pid), 0); return True
     except ProcessLookupError: return False
+
+
+class Screen:
+    """Track the cells fzf paints, rather than searching old PTY output."""
+    def __init__(self, rows, columns):
+        self.rows, self.columns = rows, columns
+        self.cells = [[' '] * columns for _ in range(rows)]
+        self.frame = self.cells
+        self.y = self.x = 0
+        self.saved = (0, 0)
+        self.pending = ''
+        self.decoder = codecs.getincrementaldecoder('utf-8')('replace')
+
+    def feed(self, data):
+        self.pending += self.decoder.decode(data)
+        while self.pending:
+            if self.pending.startswith('\x1b['):
+                match = re.match(r'\x1b\[([0-?]*)([ -/]*)([@-~])', self.pending)
+                if not match: return
+                self.pending = self.pending[match.end():]
+                args, _, action = match.groups()
+                if args.startswith('?'):
+                    # fzf finishes each paint by restoring auto-wrap. Inspect
+                    # complete frames even when a PTY read splits a repaint.
+                    if args == '?7' and action == 'h':
+                        self.frame = [row[:] for row in self.cells]
+                    continue
+                values = [int(n or 0) for n in args.split(';')]
+                n = values[0] or 1
+                if action == 'A': self.y -= n
+                elif action == 'B': self.y += n
+                elif action == 'C': self.x += n
+                elif action == 'D': self.x -= n
+                elif action in ('H', 'f'):
+                    self.y = n - 1
+                    self.x = (values[1] or 1) - 1 if len(values) > 1 else 0
+                elif action == 'G': self.x = n - 1
+                elif action == 'd': self.y = n - 1
+                elif action == 'J':
+                    if values[0] in (2, 3):
+                        self.cells = [[' '] * self.columns for _ in range(self.rows)]
+                    elif values[0] == 0:
+                        self.cells[self.y][self.x:] = [' '] * (self.columns - self.x)
+                        for y in range(self.y + 1, self.rows): self.cells[y] = [' '] * self.columns
+                    else: raise AssertionError(('unsupported erase', args))
+                elif action in ('K', 'X'):
+                    start = 0 if action == 'K' and values[0] in (1, 2) else self.x
+                    end = self.x + n if action == 'X' else self.x + 1 if values[0] == 1 else self.columns
+                    self.cells[self.y][start:end] = [' '] * (min(end, self.columns) - start)
+                elif action == 's': self.saved = (self.y, self.x)
+                elif action == 'u': self.y, self.x = self.saved
+                elif action not in ('m', 'h', 'l', 'n', 't', 'q'):
+                    raise AssertionError(('unsupported CSI', args, action))
+                self.y = max(0, min(self.rows - 1, self.y))
+                self.x = max(0, min(self.columns - 1, self.x))
+                continue
+            if self.pending[0] == '\x1b':
+                if len(self.pending) < 2: return
+                escape = self.pending[1]
+                if escape == ']':
+                    match = re.search(r'\x07|\x1b\\', self.pending)
+                    if not match: return
+                    self.pending = self.pending[match.end():]
+                    continue
+                if escape == '7': self.saved = (self.y, self.x)
+                elif escape == '8': self.y, self.x = self.saved
+                elif escape in ('(', ')'):
+                    if len(self.pending) < 3: return
+                    self.pending = self.pending[3:]
+                    continue
+                else: raise AssertionError(('unsupported escape', escape))
+                self.pending = self.pending[2:]
+                continue
+            char, self.pending = self.pending[0], self.pending[1:]
+            if char == '\r': self.x = 0
+            elif char == '\n': self.y = min(self.rows - 1, self.y + 1)
+            elif char == '\b': self.x = max(0, self.x - 1)
+            elif char >= ' ' and not unicodedata.combining(char):
+                self.cells[self.y][self.x] = char
+                self.x = min(self.columns - 1, self.x + (2 if unicodedata.east_asian_width(char) in ('W', 'F') else 1))
+
+    def preview(self):
+        return re.findall(r'ROW_\d{2}(?:_EDIT)?', '\n'.join(''.join(row[43:97]) for row in self.frame))
 
 
 with tempfile.TemporaryDirectory(prefix='picker-size-') as directory:
@@ -56,12 +142,118 @@ elif args[:2] == ['pane', 'read']:
     assert args[3:] == ['--source', 'recent-unwrapped', '--lines', '30', '--format', 'ansi'], args
     log('read ' + args[2])
     if os.environ.get('FAIL_READ'): sys.exit(1)
-    print('\\x1b[32mSCREEN_' + args[2] + '\\x1b[0m')
+    if os.environ.get('CONTENT'):
+        print(Path(os.environ['CONTENT']).read_text(), end='')
+    else:
+        print('\\x1b[32mSCREEN_' + args[2] + '\\x1b[0m')
 else:
     log('unexpected ' + ' '.join(args))
     sys.exit(2)
 ''')
     fake.chmod(0o700)
+
+    # Actual picker, actual fzf, fake panes only. Check current cells repeatedly
+    # while the reader continues polling, including rolling snapshots and edits.
+    for origin in ('p1', 'outside'):
+        case = root / ('viewport-' + origin)
+        case.mkdir()
+        content, data, events = (case / name for name in ('content', 'snapshot', 'events'))
+        data.write_text(json.dumps({
+            'focused_pane_id': origin, 'panes': [{'pane_id': p} for p in ('p1', 'outside')],
+            'agents': [dict(agent='claude', pane_id='p1', workspace_id='w1', tab_id='t1',
+                            agent_status='working', title='Agent', focused=True)],
+            'workspaces': [], 'tabs': [],
+        }))
+        (case / 'config').touch()
+        (case / 'socket').touch()
+        env = {key: value for key, value in os.environ.items()
+               if not key.startswith(('HERDR_', 'FZF_'))}
+        env.update(TERM='xterm-256color', HERDR_BIN_PATH=str(fake), EVENTS=str(events),
+                   SNAPSHOT=str(data), CONTENT=str(content), HERDR_PLUGIN_STATE_DIR=str(case / 'state'),
+                   HERDR_SOCKET_PATH=str(case / 'socket'), HERDR_CONFIG_PATH=str(case / 'config'))
+
+        def publish(first, last, edit=False):
+            temporary = content.with_suffix('.tmp')
+            temporary.write_text(''.join('\x1b[32mROW_%02d%s\x1b[0m\n' %
+                                         (n, '_EDIT' if edit else '') for n in range(first, last + 1)))
+            temporary.replace(content)
+
+        publish(1, 30)
+        pid, fd = pty.fork()
+        if pid == 0:
+            os.execve(str(BINARY), [str(BINARY), 'picker'], env)
+        fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack('HHHH', 18, 100, 0, 0))
+        screen = Screen(18, 100)
+
+        def lines():
+            return events.read_text().splitlines() if events.exists() else []
+
+        def reads():
+            return lines().count('read p1')
+
+        def pump():
+            if select.select([fd], [], [], 0.03)[0]: screen.feed(os.read(fd, 65536))
+
+        def wait_for(check):
+            deadline = time.monotonic() + 8
+            while time.monotonic() < deadline:
+                pump()
+                if check(): return
+            raise AssertionError((origin, screen.preview(), lines()))
+
+        def stable(expected, refreshes=3):
+            count = reads()
+            deadline = time.monotonic() + 8
+            end = time.monotonic() + refreshes + 0.3
+            while reads() < count + refreshes or time.monotonic() < end:
+                assert time.monotonic() < deadline, (origin, lines())
+                pump()
+                assert screen.preview() == expected, (origin, expected, screen.preview())
+
+        try:
+            wait_for(lambda: 'ROW_30' in screen.preview())
+            assert 'ROW_01' not in screen.preview(), screen.preview()
+            # Shift-up is fzf's default preview-up; let following pause naturally.
+            os.write(fd, b'\x1b[1;2A' * 5)
+            wait_for(lambda: 'ROW_30' not in screen.preview() and 'ROW_12' in screen.preview())
+            end = time.monotonic() + 0.3
+            while time.monotonic() < end: pump()
+            scrolled = screen.preview()
+            stable(scrolled)
+            publish(1, 33)  # Growing output keeps the same visible cells.
+            stable(scrolled)
+            publish(5, 34)  # Rolling 30-line snapshots keep the same history too.
+            stable(scrolled, 2)
+            # Reach bottom with native preview-down, which resumes follow.
+            os.write(fd, b'\x1b[1;2B' * 50)
+            wait_for(lambda: 'ROW_34' in screen.preview())
+            publish(6, 35)
+            wait_for(lambda: 'ROW_35' in screen.preview())
+            # A replacement must refresh real content, even without overlap.
+            publish(1, 30, edit=True)
+            wait_for(lambda: 'ROW_30_EDIT' in screen.preview())
+            assert all(row.endswith('_EDIT') for row in screen.preview()), screen.preview()
+            attachments = [line.split() for line in lines() if line.startswith('attach ')]
+            assert len(attachments) == (0 if origin == 'p1' else 1), lines()
+            print('PASS: visible viewport, idle/growing/rolling snapshots, bottom follow and replacement', origin, flush=True)
+        finally:
+            os.write(fd, b'q')
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                done, _ = os.waitpid(pid, os.WNOHANG)
+                if done: break
+                if select.select([fd], [], [], 0.03)[0]:
+                    try: os.read(fd, 65536)
+                    except OSError as error:
+                        if error.errno != errno.EIO: raise
+            else:
+                os.kill(pid, signal.SIGKILL)
+                os.waitpid(pid, 0)
+            os.close(fd)
+            for attachment in [line.split() for line in lines() if line.startswith('attach ')]:
+                deadline = time.monotonic() + 5
+                while alive(attachment[-1]) and time.monotonic() < deadline: time.sleep(0.02)
+                assert not alive(attachment[-1]), lines()
 
     for scenario in ('switch-hide-close', 'interrupt', 'read-failure', 'attach-failure'):
         events = root / (scenario + '.log')

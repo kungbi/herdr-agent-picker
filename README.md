@@ -4,9 +4,17 @@
 
 A compact, keyboard-driven agent popup for Herdr.
 
-![Herdr Agent Picker showing Done, Active and date-grouped history with fictional tasks](docs/images/agent-picker-demo.png)
+![Release Rust picker with Done, Active and date-grouped synthetic agents beside a colored terminal preview](docs/images/agent-picker-preview.png)
 
-*Illustrative preview using fictional tasks, projects and paths.*
+*Terminal preview: `j`/`k` to move, `/` to search, `p` to toggle preview, Enter to focus.*
+
+![Release Rust picker with its centered alarm preset dialog over the synthetic agent list and preview](docs/images/agent-picker-alarm.png)
+
+*Alarm presets: `a` to open, `j`/`k` or arrows to move, `1`–`8` or Enter to choose, Esc to cancel.*
+
+Both screenshots capture the release Rust binary and real fzf in an isolated PTY,
+rendered from ANSI with a monospace font. All agents, tasks, paths and preview
+output are synthetic; no live Herdr sessions or notifications were used.
 
 - Colored status first, bold task title, dim workspace/tab location.
 - `j`/`k` or arrow keys to navigate; `Ctrl+D`/`Ctrl+U` to move five agents at a time.
