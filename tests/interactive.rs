@@ -9,7 +9,7 @@ fn press(pty: &mut Pty, keys: &[u8]) {
     pty.drain(Duration::from_millis(150));
 }
 fn received(f: &Fixture) -> Vec<u8> {
-    fs::read(f.path("received")).unwrap_or_default()
+    fs::read(f.path("received")).unwrap()
 }
 fn calls(f: &Fixture, pair: [&str; 2]) -> usize {
     f.calls()
@@ -19,6 +19,7 @@ fn calls(f: &Fixture, pair: [&str; 2]) -> usize {
 }
 fn scenario(case: &str) {
     let mut f = Fixture::new(case);
+    f.write("received", "");
     f.env("FAKE_MODE", "interactive");
     fs::create_dir_all(f.path("tmp")).unwrap();
     f.env("TMPDIR", f.path("tmp"));
@@ -59,7 +60,9 @@ fn scenario(case: &str) {
             press(&mut p, b"NeverMatch-i");
             p.wait_for(b"NeverMatch-i");
             assert_eq!(calls(&f, ["pane", "process-info"]), 0);
-            press(&mut p, b"\x1b");
+            p.clear();
+            p.send(b"\x1b");
+            p.wait_for(b"Task 1");
         }
         "empty_list" => {
             press(&mut p, b"i");
@@ -128,18 +131,29 @@ fn exercise(case: &str, f: &Fixture, p: &mut Pty, data: &mut Value) {
     let mut screen = Screen::new(24, 160);
     screen.feed(&p.output);
     if case == "scrolled_entry" {
-        press(p, &b"\x1b[1;2A".repeat(3));
-        screen.feed(&p.output);
-        let right = screen
-            .frame
-            .iter()
-            .map(|r| r[65..].iter().collect::<String>())
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(
-            !right.contains("LIVE ready"),
-            "fixture did not scroll away from bottom"
-        );
+        let visible = |s: &Screen, text: &str| {
+            s.frame
+                .iter()
+                .any(|row| row[65..].iter().collect::<String>().contains(text))
+        };
+        p.clear();
+        let deadline = std::time::Instant::now() + WAIT;
+        while !visible(&screen, "LIVE ready") {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "initial frame did not settle"
+            );
+            screen.pump(p);
+        }
+        let deadline = std::time::Instant::now() + WAIT;
+        while visible(&screen, "LIVE ready") || !visible(&screen, "PREVIOUS_ROW_") {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "preview did not scroll"
+            );
+            p.send(b"\x1b[1;2A");
+            screen.pump(p);
+        }
     }
     p.clear();
     press(p, if case == "burst" { b"ix" } else { b"i" });
