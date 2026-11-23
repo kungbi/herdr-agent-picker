@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.0
+
+- Press `i` in the picker to write to the selected agent, `Enter` to send, or `Esc` to cancel. The recipient is rechecked before sending.
+- Keep your scroll position while reading a live preview as new output arrives.
+- Run the Rust unit and integration suites together with `cargo test --locked`. Python is used only by the release packager.
+
 ## 0.1.0
 
 - Keep the terminal behind the picker at its original size when previewing that agent.
