@@ -214,6 +214,36 @@ fn attached_viewport() {
     keeps_preview_viewport("outside");
 }
 
+#[test]
+fn tall_preview_fills_with_recent_history() {
+    let mut fixture = setup("tall-preview");
+    let content = fixture.path("content");
+    fixture.env("CONTENT", content);
+    fixture.write_json(
+        "snapshot.json",
+        &json!({
+            "focused_pane_id": "p1", "panes": [{"pane_id": "p1"}],
+            "agents": [agent("p1", "Agent", true)], "workspaces": [], "tabs": []
+        }),
+    );
+    publish_rows(&fixture, 1, 90, "");
+    let mut picker = fixture.spawn(&["picker"], 48, 100);
+    let mut screen = Screen::new(48, 100);
+    wait_screen(&fixture, &mut picker, &mut screen, |rows| {
+        rows.len() > 30 && rows.last().is_some_and(|row| row == "ROW_90")
+    });
+    let rows = screen.preview();
+    let requested = fixture
+        .calls()
+        .into_iter()
+        .rev()
+        .find(|c| c.starts_with(&["pane".into(), "read".into()]))
+        .unwrap();
+    assert_eq!(rows.len(), requested[6].parse::<usize>().unwrap());
+    picker.send(b"q");
+    assert!(picker.finish().success());
+}
+
 fn lifecycle(scenario: &str) {
     let mut fixture = setup(scenario);
     if scenario == "read-failure" {

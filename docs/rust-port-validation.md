@@ -113,7 +113,7 @@ local caches, sockets, state, settings or target directories.
 
 ## Validation environment and limits
 
-The direct-input revision runs these exact local checks with cached dependencies:
+The direct-input and preview-height changes passed these local checks with cached dependencies:
 
 ```sh
 cargo fmt --check
@@ -121,18 +121,22 @@ cargo check --locked --offline
 cargo clippy --locked --offline --all-targets -- -D warnings
 cargo test --locked --offline
 cargo build --release --locked --offline
+cargo test --release --locked --offline --test interactive letters_before_enter -- --exact
 sh -n run
 git diff --check
 sh ./run --version
 ```
 
-The expected inventory is **17 unit tests and 128 integration tests**, including
-29 direct-input cases, 45 picker cases, 14 live-list cases, 15 preview cases,
+The default suite passed **17 unit tests and 129 integration tests**, with none
+ignored, including
+29 direct-input cases, 45 picker cases, 14 live-list cases, 16 preview cases,
 13 reminder cases, four conversation checks, six runtime checks and two package
 checks. The package test checks native/source determinism, exact effective
 contents, checksums, extracted launcher execution and extracted-source compilation.
 The release binary is rebuilt in `target/release/herdr-agent-picker`, which this
-linked checkout's `run` selects (there is no packaged `bin/` override).
+linked checkout's `run` selects (there is no packaged `bin/` override). The
+additional release-mode `letters_before_enter` case passed against that executable.
+`sh ./run --version` reports `herdr-agent-picker 0.2.0`.
 
 Changed files for this revision:
 

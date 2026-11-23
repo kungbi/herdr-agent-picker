@@ -115,6 +115,11 @@ pub fn clean(text: &str) -> String {
     output
 }
 fn read_snapshot(pane: &str) -> Result<String> {
+    let lines = env::var("FZF_PREVIEW_LINES")
+        .ok()
+        .and_then(|s| s.parse::<u16>().ok())
+        .unwrap_or(30)
+        .max(30);
     command_output(
         Command::new(herdr()).args([
             "pane",
@@ -123,7 +128,7 @@ fn read_snapshot(pane: &str) -> Result<String> {
             "--source",
             "recent-unwrapped",
             "--lines",
-            "30",
+            &lines.to_string(),
             "--format",
             "ansi",
         ]),

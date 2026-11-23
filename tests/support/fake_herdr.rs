@@ -217,16 +217,18 @@ fn main() {
         ["pane", "read"] => {
             // A direct fixture read may request just --format ansi to compare styles.
             assert!(
-                args[3..]
-                    == [
-                        "--source",
-                        "recent-unwrapped",
-                        "--lines",
-                        "30",
-                        "--format",
-                        "ansi"
-                    ]
-                    || args[3..] == ["--format", "ansi"]
+                args[3..] == ["--format", "ansi"]
+                    || args.len() == 9
+                        && args[6].parse::<u16>().is_ok_and(|n| n > 0)
+                        && args[3..]
+                            == [
+                                "--source",
+                                "recent-unwrapped",
+                                "--lines",
+                                &args[6],
+                                "--format",
+                                "ansi"
+                            ]
             );
             log("EVENTS", &format!("read {}", args[2]));
             if flag("FAIL_READ") || d["read_error"] == true {
@@ -237,7 +239,17 @@ fn main() {
                     serde_json::from_slice(&fs::read(file("SNAPSHOTS")).unwrap()).unwrap();
                 print!("{}", map[&args[2]].as_str().unwrap());
             } else if flag("CONTENT") {
-                print!("{}", fs::read_to_string(file("CONTENT")).unwrap());
+                let text = fs::read_to_string(file("CONTENT")).unwrap();
+                let limit = args
+                    .get(6)
+                    .map(|n| n.parse::<usize>().unwrap())
+                    .unwrap_or(usize::MAX);
+                for line in text
+                    .lines()
+                    .skip(text.lines().count().saturating_sub(limit))
+                {
+                    println!("{line}");
+                }
             } else if mode == "interactive" {
                 let path = Path::new(&file("DATA")).with_file_name("received");
                 let received = fs::read(path).unwrap_or_default();
