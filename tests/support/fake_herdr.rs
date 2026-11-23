@@ -176,7 +176,6 @@ fn main() {
                     libc::cfmakeraw(&mut term);
                     libc::tcsetattr(0, libc::TCSANOW, &term);
                 }
-                fs::write(Path::new(&file("DATA")).with_file_name("received"), []).unwrap();
             }
             while !STOP.load(Ordering::Relaxed) {
                 if mode == "interactive" {
