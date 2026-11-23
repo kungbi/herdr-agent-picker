@@ -12,15 +12,17 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 COMMON = ('LICENSE', 'README.md', 'CHANGELOG.md', 'herdr-plugin.toml', 'run',
-          'docs/rust-port-validation.md', 'docs/images/agent-picker-demo.png', 'docs/images/agent-picker-demo.svg',
+          'docs/rust-port-validation.md', 'docs/scenario-parity.md',
+          'docs/parity-picker.md', 'docs/parity-preview.md', 'docs/parity-dialogs.md',
+          'docs/images/agent-picker-demo.png', 'docs/images/agent-picker-demo.svg',
           'docs/images/agent-picker-preview.png', 'docs/images/agent-picker-alarm.png')
 SOURCE = ('Cargo.toml', 'Cargo.lock', 'scripts/build_package.py',
-          'tests/run_rust_regressions.py', 'tests/rust_support.py',
-          'tests/test_runtime.py', 'tests/test_picker.py', 'tests/test_live_picker.py',
-          'tests/test_preview_resize.py', 'tests/test_conversation_picker.py',
-          'tests/test_reminder_picker.py', 'tests/test_package.py',
+          'tests/common/mod.rs', 'tests/support/fake_herdr.rs',
+          'tests/runtime.rs', 'tests/picker.rs', 'tests/live_picker.rs', 'tests/composer.rs',
+          'tests/preview_resize.rs', 'tests/conversation_picker.rs',
+          'tests/reminder_picker.rs', 'tests/package.rs', '.github/workflows/preview.yml',
           'src/main.rs', 'src/config.rs', 'src/util.rs', 'src/completion.rs', 'src/picker.rs',
-          'src/preview.rs', 'src/reminders.rs', 'src/dialog.rs', 'src/sqlite.rs')
+          'src/preview.rs', 'src/reminders.rs', 'src/dialog.rs', 'src/composer.rs', 'src/sqlite.rs')
 
 
 def host_target():

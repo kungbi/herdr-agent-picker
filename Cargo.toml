@@ -6,6 +6,10 @@ rust-version = "1.82"
 license = "MIT"
 description = "Native Herdr agent picker, completion hooks and reminders"
 
+[[example]]
+name = "fake_herdr"
+path = "tests/support/fake_herdr.rs"
+
 [dependencies]
 libc = "0.2.183"
 regex = "1.12.3"

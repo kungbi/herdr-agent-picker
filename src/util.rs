@@ -116,10 +116,15 @@ pub fn command_output(command: &mut Command, timeout: Duration) -> Result<String
         std::thread::sleep(Duration::from_millis(10));
     };
     let output = stdout.join().map_err(|_| "Output reader failed")??;
-    let _ = stderr.join();
+    let error = stderr.join().map_err(|_| "Error reader failed")??;
+    let error_text = String::from_utf8_lossy(&error);
+    let error_message = serde_json::from_slice::<Value>(&error)
+        .ok()
+        .and_then(|v| v["error"]["message"].as_str().map(str::to_owned))
+        .unwrap_or_else(|| error_text.into_owned());
     match status {
         Some(status) if status.success() => Ok(String::from_utf8_lossy(&output).into_owned()),
-        Some(status) => Err(format!("Command failed: {status}").into()),
+        Some(status) => Err(format!("Command failed: {status}: {}", label(&error_message)).into()),
         None => Err("Command timed out or interrupted".into()),
     }
 }

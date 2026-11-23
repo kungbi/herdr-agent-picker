@@ -22,7 +22,9 @@ output are synthetic; no live Herdr sessions or notifications were used.
 - Press `/` to search by task, workspace, tab, or agent name. Use arrow keys to
   navigate results and Enter to focus. Esc clears the search and returns to normal
   navigation without closing the picker, even with an empty query or no matches.
-  Press Esc or `q` in normal mode to close; while searching, `q` is ordinary text.
+  Press Esc or `q` in normal mode to close; while searching, `q` and `i` are ordinary text.
+- Press `i` in normal mode to compose a one-line message to the selected agent.
+  The bottom row shows the captured recipient; Enter sends, Esc cancels.
 - Preview opens automatically on the right, using 60% of the popup width.
   Codex, Hermes and other agents use the same colored terminal snapshot path:
   their own rendered output, not a second Markdown renderer or rebuilt chat.
@@ -73,9 +75,10 @@ compile during hooks/popup startup. Rebuild after changing Rust source.
 
 Extract the matching `.tar.gz` or `.zip` package to a permanent directory and
 follow Local installation below. Check it against its `SHA256SUMS-<target>` file.
-Source archives include Rust code plus Python build/test tooling, without a
-prebuilt binary. `herdr plugin install` from a source Git ref also requires the
-build step; automatic source compilation during installation is not assumed.
+Source archives include Rust code, native integration tests and the Python
+packaging tool, without a prebuilt binary. `herdr plugin install` from a source
+Git ref also requires the build step; automatic source compilation during
+installation is not assumed.
 
 ## Local installation
 
@@ -135,6 +138,38 @@ preview shows `Preview unavailable`. Enter still opens the original pane.
 Previewing never sends input, changes focus, resizes splits, or acknowledges a
 reminder. The baseline attachment protocol was checked with Herdr 0.9.5; this Rust port
 validates it with isolated fake attachments. Glow is not used by the picker.
+
+## Send a message without leaving the picker
+
+Press `i` outside search to open the bottom composer. Its recipient shows the pane,
+foreground PID and agent name/kind captured when it opens. The list and preview stay
+visible; the preview keeps refreshing, and pending list reloads resume on return.
+Changing status, sort order
+or focus flags cannot redirect the message. Enter submits non-empty text literally
+plus one Enter using a single `herdr agent prompt` request, then returns to the
+picker. Esc discards the draft with zero sends. Neither action focuses or closes
+an agent pane. Backspace removes one Unicode character; Korean UTF-8 is supported.
+
+Bracketed paste accepts one line, preserving spaces and shell punctuation exactly.
+Multiline, control-character, malformed UTF-8 and oversized pastes are rejected
+as a whole; input is limited to 16 KiB. Queued input after an unbracketed Enter is
+rejected to avoid sending a pasted first line or leaking subsequent picker keys.
+Use a terminal with bracketed paste support: a single unbracketed pasted line
+ending in Enter is indistinguishable from typing that line and pressing Enter.
+
+Before sending, the picker rechecks the captured terminal, agent session/name/kind
+and foreground process identity. Missing identity data, a shell or unrelated
+foreground process, or a gone/replaced agent prevents submission. It uses argv,
+never shell interpolation or raw pane-input fallback. Herdr can reject a blocked
+agent. Errors appear on the bottom row; Enter/Esc returns to the picker. A failed
+or timed-out submission may have partially arrived and is **never retried**.
+
+The installed Herdr API has no atomic expected-identity argument for `agent prompt`.
+Revalidation and agent-specific server validation reduce risk but cannot eliminate
+the race between the final identity check and server delivery. Foreground detection
+is conservative and may reject unfamiliar executable wrappers. The contract was
+checked against the installed CLI/schema; real agent delivery is not exercised by
+the isolated regression tests.
 
 ## Reminders
 
@@ -218,6 +253,7 @@ model metadata separated by ` · `, preserving model names mentioned in task tex
 ```sh
 cargo fmt --check
 cargo check --locked
+cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked
 sh ./run build
 sh ./run check
@@ -226,29 +262,36 @@ sh ./run package
 sh ./run package --source
 ```
 
-`run test` builds and tests Rust, then uses Python 3.11+ as a PTY/SQLite fixture
-harness around the compiled Rust binary and real fzf. Set `PYTHON` to select the
-build/test interpreter; Python is never a plugin runtime dependency. To test a
-specific native build directly:
+`cargo test --locked` discovers every unit, integration, real-fzf PTY and package
+check. `sh ./run test` forwards to that same command. Install fzf 0.73.1, system
+SQLite development libraries, `gzip`, `unzip`, and Python 3.11+ for the production
+packaging tool. There are no Python tests or fixtures. The Rust packaging tests
+invoke `scripts/build_package.py`, the sole Python exception; `PYTHON` selects
+its interpreter. With dependencies already cached, run everything offline:
 
 ```sh
-HERDR_AGENT_PICKER_TEST_BINARY="$PWD/target/release/herdr-agent-picker" \
-  python3.11 tests/run_rust_regressions.py
+CARGO_NET_OFFLINE=true cargo test --locked
 ```
 
 Fixtures use synthetic agents, an isolated state directory and fake Herdr
 executables. They never change live panes or send desktop notifications. Coverage
 includes keyboard/search behavior, live reload latency and cursor identity,
+the bottom composer (literal argv, paste/UTF-8, cancellation, immutable recipients,
+gone/replaced agents, partial failures and timeouts without retries),
 completion migration and hooks, existing reminder schema and server scope,
 worker recovery/singleton shutdown, dialogs, ANSI/frame preservation, real-fzf
 preview resizing/releasing and forced preview-process death. Notification argument
 construction and retry/acknowledgement logic have native unit coverage; actual OS
 notification presentation and real Herdr attachment are not automated here.
 
-The former Python runtime and its Python-only unit tests were removed. Neither
-`cargo test` nor the explicitly enumerated regression suite can silently fall
-back to them. `agent_preview.py` was unused by the baseline picker and is not
-part of the port.
+The [scenario parity map](docs/scenario-parity.md) inventories every former
+Python scenario and assertion. The fake Herdr is a fixture example, built on
+demand offline in a separate Cargo target directory. Tests use Cargo's reported
+executable path; default installation, release builds and native packages contain
+only the application. Extracted source passes an offline, locked Cargo check of
+all targets in its own target directory, without executing tests recursively.
+PTY cases serialize within each suite for stable latency checks. See
+[validation details](docs/rust-port-validation.md).
 
 Python packaging tooling creates deterministic `.tar.gz`/`.zip` archives and
 per-target checksums in `dist/`, using explicit allowlists. Local settings,

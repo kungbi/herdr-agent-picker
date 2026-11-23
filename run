@@ -11,7 +11,7 @@ tool_python() {
             return
         fi
     done
-    printf '%s\n' 'Build/test packaging tools require Python 3.11 or newer.' >&2
+    printf '%s\n' 'The production packaging tool requires Python 3.11 or newer.' >&2
     return 1
 }
 case "$mode" in
@@ -19,13 +19,10 @@ case "$mode" in
     build) exec cargo build --release --locked --manifest-path "$plugin_root/Cargo.toml" "$@" ;;
     test)
         cd "$plugin_root"
-        cargo test --locked
-        cargo build --locked
-        export HERDR_AGENT_PICKER_TEST_BINARY="${HERDR_AGENT_PICKER_TEST_BINARY:-$plugin_root/target/debug/herdr-agent-picker}"
-        exec "$(tool_python)" tests/run_rust_regressions.py "$@"
+        exec cargo test --locked "$@"
         ;;
     package) exec "$(tool_python)" "$plugin_root/scripts/build_package.py" "$@" ;;
-    picker|record|alarms|check|worker|menu|list|--version|--preview|--live-preview|--rows|--refresh) ;;
+    picker|record|alarms|check|worker|menu|list|--version|--preview|--live-preview|--rows|--refresh|--compose) ;;
     *) printf 'Unknown command: %s\n' "$mode" >&2; exit 2 ;;
 esac
 if [ -x "$plugin_root/bin/herdr-agent-picker" ]; then

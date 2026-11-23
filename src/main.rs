@@ -1,4 +1,5 @@
 mod completion;
+mod composer;
 mod config;
 mod dialog;
 mod picker;
@@ -41,6 +42,7 @@ fn run() -> Result<()> {
         ),
         "alarms" | "list" => reminders::manage(),
         "menu" => reminders::menu(args.get(1).map(String::as_str).unwrap_or("")),
+        "--compose" => composer::open(arg(1)?),
         "worker" => reminders::worker(Path::new(arg(1)?)),
         "check" => util::check(),
         "--version" => {
