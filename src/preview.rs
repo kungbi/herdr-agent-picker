@@ -53,11 +53,8 @@ pub fn clean(text: &str) -> String {
     }
     output
 }
-pub fn snapshot(pane: &str) -> Result<bool> {
-    if pane.is_empty() || pane == "@section" {
-        return Ok(false);
-    }
-    let output = command_output(
+fn read_snapshot(pane: &str) -> Result<String> {
+    command_output(
         Command::new(herdr()).args([
             "pane",
             "read",
@@ -70,15 +67,71 @@ pub fn snapshot(pane: &str) -> Result<bool> {
             "ansi",
         ]),
         Duration::from_secs(3),
-    );
-    match output {
+    )
+    .map(|text| clean(&text))
+}
+pub fn snapshot(pane: &str) -> Result<bool> {
+    if pane.is_empty() || pane == "@section" {
+        return Ok(false);
+    }
+    match read_snapshot(pane) {
         Ok(text) => {
-            print!("{}", clean(&text));
+            print!("{text}");
             Ok(true)
         }
         Err(_) => {
             println!("Preview unavailable");
             Ok(false)
+        }
+    }
+}
+
+#[derive(Default)]
+struct SnapshotStream {
+    previous: Vec<String>,
+}
+impl SnapshotStream {
+    fn write(&mut self, text: &str, out: &mut impl Write) -> Result<()> {
+        let next: Vec<String> = text.lines().map(str::to_owned).collect();
+        if next == self.previous {
+            return Ok(());
+        }
+        // fzf 0.73's CSI 2 J resets both the offset and paused follow state.
+        // Stream overlapping snapshots as terminal history instead: fzf keeps
+        // the viewport and resumes following only when scrolled to the bottom.
+        let overlap = (1..=self.previous.len().min(next.len()))
+            .rev()
+            .find(|&n| {
+                self.previous[self.previous.len() - n..] == next[..n]
+                    && next[..n].iter().any(|line| !line.trim().is_empty())
+            })
+            .unwrap_or(0);
+        if overlap == 0 && !self.previous.is_empty() {
+            // Edits/replacements with no shared tail must replace stale output.
+            // This fzf version cannot preserve the viewport across a reset.
+            write!(out, "\x1b[2J")?;
+        }
+        for line in &next[overlap..] {
+            writeln!(out, "{line}")?;
+        }
+        // A newline makes even an empty replacement visible to fzf's reader.
+        if next.is_empty() {
+            writeln!(out)?;
+        }
+        out.flush()?;
+        self.previous = next;
+        Ok(())
+    }
+    fn refresh(&mut self, pane: &str) -> Result<bool> {
+        match read_snapshot(pane) {
+            Ok(text) => {
+                self.write(&text, &mut std::io::stdout().lock())?;
+                Ok(true)
+            }
+            Err(_) => {
+                self.write("Preview unavailable", &mut std::io::stdout().lock())?;
+                Ok(false)
+            }
         }
     }
 }
@@ -249,15 +302,14 @@ fn live_inner(pane: &str, path: &Path, origin: &str) -> Result<()> {
     if stopped() {
         return Ok(());
     }
+    let mut stream = SnapshotStream::default();
     // Unknown origin is deliberately read-only too: guessing could resize the
     // visible pane. Keep the lock so a previous attachment is reaped first.
     if origin.is_empty() || pane == origin {
         while !stopped() {
-            print!("\x1b[2J\x1b[H");
-            if !snapshot(pane)? {
+            if !stream.refresh(pane)? {
                 return Ok(());
             }
-            std::io::stdout().flush()?;
             let end = Instant::now() + Duration::from_secs(1);
             while Instant::now() < end && !stopped() {
                 std::thread::sleep(Duration::from_millis(100));
@@ -292,11 +344,9 @@ fn live_inner(pane: &str, path: &Path, origin: &str) -> Result<()> {
         }
     }
     while !stopped() {
-        print!("\x1b[2J\x1b[H");
-        if !snapshot(pane)? {
+        if !stream.refresh(pane)? {
             return Ok(());
         }
-        std::io::stdout().flush()?;
         let end = Instant::now() + Duration::from_secs(1);
         while Instant::now() < end && !stopped() {
             if attached.child.try_wait()?.is_some() {
@@ -325,6 +375,29 @@ pub fn live(pane: &str, path: &Path, origin: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn live_snapshot_deltas() {
+        let mut stream = SnapshotStream::default();
+        let mut out = Vec::new();
+        stream.write("\x1b[32mA\x1b[0m\nB\n", &mut out).unwrap();
+        assert_eq!(out, b"\x1b[32mA\x1b[0m\nB\n");
+        out.clear();
+        for _ in 0..3 {
+            stream.write("\x1b[32mA\x1b[0m\nB\n", &mut out).unwrap();
+        }
+        assert!(out.is_empty());
+        stream.write("\x1b[32mA\x1b[0m\nB\nC", &mut out).unwrap();
+        assert_eq!(out, b"C\n");
+        out.clear();
+        stream.write("B\nC\nD\n", &mut out).unwrap();
+        assert_eq!(out, b"D\n");
+        out.clear();
+        stream.write("Edited\n", &mut out).unwrap();
+        assert_eq!(out, b"\x1b[2JEdited\n");
+        out.clear();
+        stream.write("", &mut out).unwrap();
+        assert_eq!(out, b"\x1b[2J\n");
+    }
     #[test]
     fn padding_and_styles() {
         let text="    한글 e\u{301} │ \x1b[0m┃\x1b[31m\n              ┃\n│ table │\n    code \x1b[0m  \x1b[31m \x1b[0m\n";
