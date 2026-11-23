@@ -110,7 +110,7 @@ Native packages need no compilation. Build source checkouts before linking them.
 
 ## Original terminal preview
 
-Every agent uses `herdr pane read --source recent-unwrapped --lines 30 --format ansi`.
+The preview reads enough recent unwrapped lines to fill its height, with a minimum of 30 lines for scrolling.
 The picker preserves the agent's rendered colors, emphasis, code, text and message
 order instead of parsing Markdown again. There is no Hermes-specific database
 lookup, saved-conversation header, role reconstruction, or newest-first reversal.

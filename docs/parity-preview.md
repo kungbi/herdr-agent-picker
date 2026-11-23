@@ -1,6 +1,6 @@
 # Native preview regression parity
 
-The Rust integration tests use a synthetic Herdr process and a real fzf controlling terminal. The tests check that terminal attaches carry only the pane identifier and preview reads use `--source recent-unwrapped --lines 30 --format ansi`. The fake records the attachment PID, its PTY size, and the size fzf advertised.
+The Rust integration tests use a synthetic Herdr process and a real fzf controlling terminal. The tests check that terminal attaches carry only the pane identifier and preview reads use `--source recent-unwrapped --lines N --format ansi`, where N is the preview height or 30, whichever is larger. The fake records the attachment PID, its PTY size, and the size fzf advertised.
 
 ## Preview viewport and lifecycle
 
