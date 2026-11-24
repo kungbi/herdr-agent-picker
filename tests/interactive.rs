@@ -57,8 +57,8 @@ fn scenario(case: &str) {
     match case {
         "search_i" => {
             press(&mut p, b"/");
-            press(&mut p, b"NeverMatch-i");
-            p.wait_for(b"NeverMatch-i");
+            press(&mut p, b"NeverMatch-iJKudUD");
+            p.wait_for(b"NeverMatch-iJKudUD");
             assert_eq!(calls(&f, ["pane", "process-info"]), 0);
             p.clear();
             p.send(b"\x1b");
@@ -278,8 +278,8 @@ fn exercise(case: &str, f: &Fixture, p: &mut Pty, data: &mut Value) {
             data["agents"][0]["title"] = json!("Reordered second");
             f.write_json("data.json", data);
             p.drain(Duration::from_millis(1300));
-            press(p, b"jk2q\r");
-            p.wait_until(|| received(f) == b"xjk2q\r", WAIT);
+            press(p, b"jkJKudUD2q\r");
+            p.wait_until(|| received(f) == b"xjkJKudUD2q\r", WAIT);
         }
         "resize" => {
             p.resize(30, 180);

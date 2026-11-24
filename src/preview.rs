@@ -114,12 +114,15 @@ pub fn clean(text: &str) -> String {
     }
     output
 }
-fn read_snapshot(pane: &str) -> Result<String> {
-    let lines = env::var("FZF_PREVIEW_LINES")
+fn snapshot_limit() -> u16 {
+    env::var("FZF_PREVIEW_LINES")
         .ok()
         .and_then(|s| s.parse::<u16>().ok())
-        .unwrap_or(30)
-        .max(30);
+        .unwrap_or(0)
+        .saturating_mul(2)
+        .max(30)
+}
+pub fn read_snapshot_lines(pane: &str, lines: u16) -> Result<String> {
     command_output(
         Command::new(herdr()).args([
             "pane",
@@ -135,6 +138,9 @@ fn read_snapshot(pane: &str) -> Result<String> {
         Duration::from_secs(3),
     )
     .map(|text| clean(&text))
+}
+fn read_snapshot(pane: &str) -> Result<String> {
+    read_snapshot_lines(pane, snapshot_limit())
 }
 pub fn snapshot(pane: &str) -> Result<bool> {
     if pane.is_empty() || pane == "@section" {
@@ -152,13 +158,59 @@ pub fn snapshot(pane: &str) -> Result<bool> {
     }
 }
 
+// pane read is already sanitized: SGR is the only remaining escape sequence.
+pub fn visual_rows(text: &str, width: usize) -> Vec<String> {
+    let mut rows = Vec::new();
+    for line in text.lines() {
+        let mut row = String::new();
+        let mut cells = 0;
+        let mut sgr = false;
+        for ch in line.chars() {
+            if ch == '\x1b' || sgr {
+                row.push(ch);
+                sgr = ch != 'm';
+                continue;
+            }
+            let n = if ch == '\t' {
+                8 - cells % 8
+            } else {
+                ch.width().unwrap_or(0)
+            };
+            if ch == '\t' {
+                for _ in 0..n {
+                    if cells == width {
+                        rows.push(std::mem::take(&mut row));
+                        cells = 0;
+                    }
+                    row.push(' ');
+                    cells += 1;
+                }
+            } else {
+                if n > 0 && cells > 0 && cells + n > width {
+                    rows.push(std::mem::take(&mut row));
+                    cells = 0;
+                }
+                row.push(ch);
+                cells += n;
+            }
+        }
+        rows.push(row);
+    }
+    rows
+}
+
 #[derive(Default)]
 struct SnapshotStream {
     previous: Vec<String>,
+    buffer: Vec<String>,
+    restored: bool,
+    height: usize,
+    width: usize,
+    emitted: usize,
 }
 impl SnapshotStream {
     fn write(&mut self, text: &str, out: &mut impl Write) -> Result<()> {
-        let next: Vec<String> = text.lines().map(str::to_owned).collect();
+        let next = visual_rows(text, self.width.max(1));
         if next == self.previous {
             return Ok(());
         }
@@ -172,11 +224,14 @@ impl SnapshotStream {
                     && next[..n].iter().any(|line| !line.trim().is_empty())
             })
             .unwrap_or(0);
-        if overlap == 0 && !self.previous.is_empty() {
-            // Edits/replacements with no shared tail must replace stale output.
-            // This fzf version cannot preserve the viewport across a reset.
-            write!(out, "\x1b[2J")?;
+        if overlap == 0 && self.emitted > 0 {
+            // A working agent may repaint old rows. Replace the live buffer, not its history twice.
+            out.write_all(b"\x1b[2J")?;
+            self.emitted = 0;
+            self.buffer.clear();
         }
+        self.buffer.extend_from_slice(&next[overlap..]);
+        self.emitted += next.len() - overlap + usize::from(next.is_empty());
         for line in &next[overlap..] {
             writeln!(out, "{line}")?;
         }
@@ -188,10 +243,37 @@ impl SnapshotStream {
         self.previous = next;
         Ok(())
     }
-    fn refresh(&mut self, pane: &str) -> Result<bool> {
+    fn refresh(&mut self, pane: &str, history: &Path) -> Result<bool> {
         match read_snapshot(pane) {
             Ok(text) => {
-                self.write(&text, &mut std::io::stdout().lock())?;
+                // Serialize publication with the first scroll key, never with the slow pane read.
+                let _guard = lock(&history.with_extension("viewport-lock"), false)?;
+                if self.emitted == 0 || !history.exists() {
+                    if self.restored && !history.exists() {
+                        std::io::stdout().write_all(b"\x1b[2J")?;
+                        self.previous.clear();
+                        self.buffer.clear();
+                        self.emitted = 0;
+                        self.restored = false;
+                    }
+                    let before = self.emitted;
+                    let previous = self.previous.clone();
+                    self.write(&text, &mut std::io::stdout().lock())?;
+                    if self.emitted != before || self.previous != previous {
+                        atomic_write(
+                            &history.with_extension("extent"),
+                            format!("{} {}", self.emitted, self.height).as_bytes(),
+                        )?;
+                        atomic_write(
+                            &history.with_extension("window"),
+                            serde_json::to_string(&serde_json::json!({
+                                "pane": pane, "width": self.width, "limit": snapshot_limit(),
+                                "exhausted": false, "rows": self.buffer,
+                            }))?
+                            .as_bytes(),
+                        )?;
+                    }
+                }
                 Ok(true)
             }
             Err(_) => {
@@ -374,13 +456,38 @@ fn live_inner(pane: &str, path: &Path, origin: &str) -> Result<()> {
     if stopped() {
         return Ok(());
     }
-    let mut stream = SnapshotStream::default();
+    let mut stream = SnapshotStream {
+        width: usize::from(columns),
+        height: usize::from(lines),
+        ..Default::default()
+    };
+    let history = path.with_extension("history");
+    if history.exists() {
+        if let Ok(data) = std::fs::read(history.with_extension("window")) {
+            if let Ok(window) = serde_json::from_slice::<serde_json::Value>(&data) {
+                if window["pane"].as_str() == Some(pane) {
+                    if let Ok(rows) = serde_json::from_value::<Vec<String>>(window["rows"].clone())
+                    {
+                        let mut out = std::io::stdout().lock();
+                        for row in &rows {
+                            writeln!(out, "{row}")?;
+                        }
+                        out.flush()?;
+                        stream.emitted = rows.len();
+                        stream.previous = rows.clone();
+                        stream.buffer = rows;
+                        stream.restored = true;
+                    }
+                }
+            }
+        }
+    }
     let mut input = crate::interaction::Input::new(path)?;
     // Unknown origin is deliberately read-only too: guessing could resize the
     // visible pane. Keep the lock so a previous attachment is reaped first.
     if origin.is_empty() || pane == origin {
         while !stopped() {
-            if !stream.refresh(pane)? {
+            if !stream.refresh(pane, &history)? {
                 return Ok(());
             }
             let end = Instant::now() + Duration::from_secs(1);
@@ -424,7 +531,7 @@ fn live_inner(pane: &str, path: &Path, origin: &str) -> Result<()> {
         }
         input.update(pane, Some(terminal), Some(&mut attached.master))?;
         if Instant::now() >= refresh {
-            if !stream.refresh(pane)? {
+            if !stream.refresh(pane, &history)? {
                 return Err("Preview read failed; input stopped".into());
             }
             refresh = Instant::now()
@@ -477,7 +584,11 @@ mod tests {
     }
     #[test]
     fn live_snapshot_deltas() {
-        let mut stream = SnapshotStream::default();
+        let mut stream = SnapshotStream {
+            height: 3,
+            width: 40,
+            ..Default::default()
+        };
         let mut out = Vec::new();
         stream.write("\x1b[32mA\x1b[0m\nB\n", &mut out).unwrap();
         assert_eq!(out, b"\x1b[32mA\x1b[0m\nB\n");

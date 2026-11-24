@@ -246,17 +246,136 @@ pub fn refresh_rows(path: &Path) -> Result<String> {
         Err(_) => Ok(fs::read_to_string(path)?),
     }
 }
+fn history_prefix(candidates: &[String], rows: &[String]) -> Option<usize> {
+    let mut best = (0, 0);
+    let mut ambiguous = false;
+    for (i, row) in candidates.iter().enumerate() {
+        if rows.first() != Some(row) {
+            continue;
+        }
+        let n = candidates[i..]
+            .iter()
+            .zip(rows)
+            .take_while(|(a, b)| a == b)
+            .count();
+        if n > best.1 {
+            best = (i, n);
+            ambiguous = false;
+        } else if n == best.1 {
+            ambiguous = true;
+        }
+        if ambiguous && n == rows.len() {
+            break;
+        }
+    }
+    (!ambiguous && best.1 >= rows.len().min(2)).then_some(best.0)
+}
+pub fn scroll(path: &Path, step: i32, pane: &str) -> Result<()> {
+    let _guard = lock(&path.with_extension("viewport-lock"), false)?;
+    let extent = path.with_extension("extent");
+    let Ok(extent) = fs::read_to_string(extent) else {
+        return Ok(());
+    };
+    let (rows, height) = extent.split_once(' ').ok_or("Invalid preview extent")?;
+    let height: usize = height.parse()?;
+    let max = rows.parse::<usize>()?.saturating_sub(height);
+    let history = path.with_extension("history");
+    let old = match fs::read_to_string(&history) {
+        Ok(value) => value.parse::<usize>()?.min(max),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => 0,
+        Err(e) => return Err(e.into()),
+    };
+    let size = match step.unsigned_abs() {
+        1 => 1,
+        2 => 2,
+        3 => (height / 2).max(1),
+        _ => return Err("Invalid scroll step".into()),
+    };
+    if step < 0 && old.saturating_add(size) > max {
+        let window_path = path.with_extension("window");
+        let mut window: Value = serde_json::from_slice(&fs::read(&window_path)?)?;
+        if window["pane"].as_str() != Some(pane) {
+            return Ok(());
+        }
+        if window["exhausted"] != true {
+            let rows: Vec<String> = serde_json::from_value(window["rows"].clone())?;
+            let width = window["width"].as_u64().ok_or("Invalid preview width")? as usize;
+            let limit = window["limit"].as_u64().ok_or("Invalid preview limit")? as u16;
+            // shortcut: reads stop at 65,535 lines, widen the limit type for deeper history.
+            let next_limit = limit.saturating_mul(2);
+            let text = crate::preview::read_snapshot_lines(pane, next_limit)?;
+            let candidates = crate::preview::visual_rows(&text, width.max(1));
+            let prefix = history_prefix(&candidates, &rows);
+            window["limit"] = json!(next_limit);
+            window["exhausted"] =
+                json!(text.lines().count() < usize::from(next_limit) || next_limit == u16::MAX);
+            if let Some(prefix) = prefix.filter(|prefix| *prefix > 0) {
+                let mut expanded = candidates[..prefix].to_vec();
+                expanded.extend(rows);
+                window["rows"] = json!(expanded);
+                atomic_write(&window_path, serde_json::to_string(&window)?.as_bytes())?;
+                atomic_write(&path.with_extension("history.expanded"), b"")?;
+                let new_max = expanded.len().saturating_sub(height);
+                let target = prefix.saturating_sub(size.saturating_sub(max - old));
+                atomic_write(
+                    &history,
+                    new_max.saturating_sub(target).to_string().as_bytes(),
+                )?;
+                atomic_write(
+                    &path.with_extension("extent"),
+                    format!("{} {}", expanded.len(), height).as_bytes(),
+                )?;
+                println!(
+                    "change-preview-window(right:60%:nowrap:nofollow:+{})+refresh-preview",
+                    target + 1
+                );
+                return Ok(());
+            }
+            atomic_write(&window_path, serde_json::to_string(&window)?.as_bytes())?;
+        }
+    }
+    let next = if step < 0 {
+        old.saturating_add(size).min(max)
+    } else {
+        old.saturating_sub(size)
+    };
+    if old == next && !(step > 0 && old == 0 && history.exists()) {
+        return Ok(());
+    }
+    if next == 0 {
+        fs::remove_file(history)?;
+        let expanded = fs::remove_file(path.with_extension("history.expanded")).is_ok();
+        if fs::remove_file(path.with_extension("history.resized")).is_ok() || expanded {
+            print!("change-preview-window(default:right:60%:nowrap:follow:+0)+refresh-preview+");
+        }
+        println!("preview-bottom");
+    } else {
+        atomic_write(&history, next.to_string().as_bytes())?;
+        let action = if next > old {
+            "preview-up"
+        } else {
+            "preview-down"
+        };
+        println!("{}", vec![action; old.abs_diff(next)].join("+"));
+    }
+    Ok(())
+}
+
 pub fn refresh_action(path: &Path) -> Result<String> {
-    if path.with_extension("active").exists() {
+    let paused =
+        || path.with_extension("active").exists() || path.with_extension("history").exists();
+    if paused() {
         return Ok(String::new());
     }
     let Some(_lock) = lock(&path.with_extension("lock"), true)? else {
         return Ok(String::new());
     };
     let previous = fs::read_to_string(path)?;
-    if refresh_rows(path)? == previous || path.with_extension("active").exists() {
+    let (next, _) = render()?;
+    if next == previous || paused() {
         return Ok(String::new());
     }
+    atomic_write(path, next.as_bytes())?;
     Ok(format!(
         "reload-sync:cat {}",
         quote(&path.to_string_lossy())
@@ -291,9 +410,31 @@ pub fn main() -> Result<()> {
         ]),
         quote(origin.as_deref().unwrap_or(""))
     );
-    let search = "j,k,a,r,p,q,/,1,2,3,4,5,6,7,8,9,ctrl-d,ctrl-u";
+    let search = "j,k,J,K,ㅓ,ㅏ,U,D,a,r,p,q,/,1,2,3,4,5,6,7,8,9,ctrl-d,ctrl-u";
+    // Reloading the agent list restarts fzf's preview, even for the same pane.
+    let history = quote(&cache.with_extension("history").to_string_lossy());
     let mut args=vec!["--ansi".into(),
-        "--no-tty-default".into(),"--color=dark,fg+:-1".into(),"--sync".into(),"--no-input".into(),"--no-sort".into(),"--no-multi".into(),"--layout=reverse".into(),"--track".into(),"--id-nth=1".into(),"--raw".into(),"--query=!^──".into(),"--with-shell=/bin/sh -c".into(),"--delimiter=\t".into(),"--with-nth=2..".into(),"--border=rounded".into(),"--border-label= Agents ".into(),"--header=1-9/Enter: focus  Ctrl+D/U: jump  /: search  p: preview  i: interact  a/r: alarm  Esc: back/close  q: close".into(),format!("--preview={preview}"),"--preview-window=right:60%:wrap-word:follow".into(),format!("--bind=/:show-input+clear-query+disable-raw+unbind({search})"),"--bind=p:toggle-preview,q:abort,resize:refresh-preview,ctrl-l:clear-screen+change-preview-label( Preview )".into(),format!("--bind=j:down-match,k:up-match,down:down-match,up:up-match,ctrl-j:down-match,ctrl-k:up-match,load:pos({selected})+unbind(load)"),format!("--bind=esc:transform:if [ \"$FZF_INPUT_STATE\" = hidden ]; then printf abort; else printf '%s' 'change-query(!^──)+enable-raw+rebind({search})'; fi"),"--bind=esc:+hide-input".into(),"--bind=enter:transform:if [ -n {1} ] && [ {1} != '@section' ]; then printf accept; fi".into(),"--bind=double-click:transform:if [ -n {1} ] && [ {1} != '@section' ]; then printf accept; fi".into(),format!("--bind=every(1):bg-transform:{reload}"),format!("--bind=a:execute-silent:{reminder} menu {{1}}"),format!("--bind=r:execute-silent:{reminder} list"),"--bind=a:+clear-screen,r:+clear-screen".into()];
+        "--no-tty-default".into(),"--color=dark,fg+:-1".into(),"--sync".into(),"--no-input".into(),"--no-sort".into(),"--no-multi".into(),"--layout=reverse".into(),"--track".into(),"--id-nth=1".into(),"--raw".into(),"--query=!^──".into(),"--with-shell=/bin/sh -c".into(),"--delimiter=\t".into(),"--with-nth=2..".into(),"--border=rounded".into(),"--border-label= Agents ".into(),"--header=1-9/Enter: focus  J/K: down/up 2 lines  U/D: half page  Ctrl+D/U: jump  /: search  p: preview  i: interact  a/r: alarm  Esc: back/close  q: close".into(),format!("--preview={preview}"),"--preview-window=right:60%:nowrap:follow".into(),format!("--bind=/:show-input+clear-query+disable-raw+unbind({search})"),"--bind=p:toggle-preview,q:abort,ctrl-l:clear-screen+change-preview-label( Preview )".into(),format!("--bind=j:down-match,k:up-match,down:down-match,up:up-match,ctrl-j:down-match,ctrl-k:up-match,load:pos({selected})+unbind(load)"),format!("--bind=esc:ignore,ctrl-]:transform:if [ \"$FZF_INPUT_STATE\" = hidden ]; then printf abort; else printf '%s' 'change-query(!^──)+enable-raw+rebind({search})'; fi"),"--bind=ctrl-]:+hide-input".into(),"--bind=enter:transform:if [ -n {1} ] && [ {1} != '@section' ]; then printf accept; fi".into(),"--bind=double-click:transform:if [ -n {1} ] && [ {1} != '@section' ]; then printf accept; fi".into(),format!("--bind=every(1):bg-transform:{reload}"),format!("--bind=a:execute-silent:{reminder} menu {{1}}"),format!("--bind=r:execute-silent:{reminder} list"),"--bind=a:+clear-screen,r:+clear-screen".into()];
+    args.push(format!(
+        "--bind=resize:transform:if [ -f {history} ]; then touch {history}.resized; else printf refresh-preview; fi"
+    ));
+    let scroll = shell(&[&exe, "--scroll", &cache.to_string_lossy()]);
+    for (keys, step) in [
+        ("K,ㅏ", -2),
+        ("J,ㅓ", 2),
+        ("shift-up,preview-scroll-up", -1),
+        ("shift-down,preview-scroll-down", 1),
+        ("U", -3),
+        ("D", 3),
+    ] {
+        args.push(format!("--bind={keys}:transform:{scroll} {step} {{1}}"));
+    }
+    args.push(format!(
+        "--bind=end:transform:rm -f {history}; if [ -f {history}.expanded ]; then rm -f {history}.expanded {history}.resized; printf '%s' 'change-preview-window(default:right:60%:nowrap:follow:+0)+refresh-preview'; elif [ -f {history}.resized ]; then rm -f {history}.resized; printf 'refresh-preview+preview-bottom'; else printf preview-bottom; fi"
+    ));
+    args.push(format!(
+        "--bind=focus:transform:if [ -f {history}.expanded ]; then rm -f {history} {history}.expanded {history}.resized; printf '%s' 'change-preview-window(default:right:60%:nowrap:follow:+0)'; else rm -f {history} {history}.resized; fi"
+    ));
     for n in 1..=9 {
         args.push(format!("--bind={n}:transform:if [ \"$FZF_MATCH_COUNT\" -ge {n} ]; then printf '%s' 'pos(1){}+accept'; fi","+down-match".repeat(n)));
     }
@@ -353,6 +494,22 @@ pub fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn history_anchor_requires_an_unambiguous_match() {
+        let rows = |items: &[&str]| items.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            history_prefix(&rows(&["old", "A", "B", "new"]), &rows(&["A", "B", "tail"])),
+            Some(1)
+        );
+        assert_eq!(
+            history_prefix(&rows(&["A", "B", "A", "B"]), &rows(&["A", "B"])),
+            None
+        );
+        assert_eq!(
+            history_prefix(&rows(&["old", "A", "other"]), &rows(&["A", "B"])),
+            None
+        );
+    }
     #[test]
     fn preview_origin_uses_session_focus_or_plugin_context_without_guessing() {
         let mut snapshot = json!({

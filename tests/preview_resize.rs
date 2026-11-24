@@ -58,18 +58,11 @@ fn assert_preview_arguments(fixture: &Fixture) {
             .map(|pair| (pair[0].as_str(), pair[1].as_str()))
         {
             Some(("terminal", "attach")) => assert_eq!(call.len(), 3, "{call:?}"),
-            Some(("pane", "read")) => assert_eq!(
-                call[3..],
-                [
-                    "--source",
-                    "recent-unwrapped",
-                    "--lines",
-                    "30",
-                    "--format",
-                    "ansi"
-                ],
-                "{call:?}"
-            ),
+            Some(("pane", "read")) => {
+                assert_eq!(call[3..6], ["--source", "recent-unwrapped", "--lines"]);
+                assert!(call[6].parse::<u16>().unwrap() >= 30, "{call:?}");
+                assert_eq!(call[7..], ["--format", "ansi"]);
+            }
             _ => {}
         }
     }
@@ -175,11 +168,28 @@ fn keeps_preview_viewport(origin: &str) {
     assert_stable(&fixture, &mut picker, &mut screen, &scrolled, 3);
     publish_rows(&fixture, 5, 34, "");
     assert_stable(&fixture, &mut picker, &mut screen, &scrolled, 2);
+    for edit_tail in [false, true] {
+        let edited: String = (5..=34)
+            .map(|row| {
+                let suffix = if row == 24 || (edit_tail && row == 34) {
+                    "_EDIT"
+                } else {
+                    ""
+                };
+                format!("\x1b[32mROW_{row:02}{suffix}\x1b[0m\n")
+            })
+            .collect();
+        fixture.write("content", &edited);
+        assert_stable(&fixture, &mut picker, &mut screen, &scrolled, 2);
+    }
 
-    picker.send(&b"\x1b[1;2B".repeat(50));
+    picker.send(b"\x1b[F");
     wait_screen(&fixture, &mut picker, &mut screen, |rows| {
-        has(rows, "ROW_34")
+        has(rows, "ROW_34_EDIT") && has(rows, "ROW_24_EDIT")
     });
+    assert!(has(&screen.preview(), "ROW_24_EDIT"));
+    assert!(!has(&screen.preview(), "ROW_24"));
+    assert!(!has(&screen.preview(), "ROW_34"));
     publish_rows(&fixture, 6, 35, "");
     wait_screen(&fixture, &mut picker, &mut screen, |rows| {
         has(rows, "ROW_35")
@@ -189,6 +199,10 @@ fn keeps_preview_viewport(origin: &str) {
         has(rows, "ROW_30_EDIT")
     });
     assert!(screen.preview().iter().all(|row| row.ends_with("_EDIT")));
+    fixture.write("content", "ROW_99\n");
+    wait_screen(&fixture, &mut picker, &mut screen, |rows| {
+        rows == ["ROW_99"]
+    });
     let attached = attachments(&fixture, "");
     assert_eq!(
         attached.len(),
@@ -206,6 +220,130 @@ fn keeps_preview_viewport(origin: &str) {
 }
 
 #[test]
+fn working_agent_redraw_does_not_repeat_history() {
+    let mut f = setup("working-redraw");
+    f.env("CONTENT", f.path("content"));
+    f.write_json("snapshot.json", &json!({"focused_pane_id":"p1","panes":[{"pane_id":"p1"}],"agents":[agent("p1","Agent",true)],"workspaces":[],"tabs":[]}));
+    let publish = |tick| {
+        let mut text: String = (1..=24).map(|n| format!("ROW_{n:02}\n")).collect();
+        text.push_str(&format!("ROW_{:02}\n", 25 + tick));
+        f.write("content", &text);
+    };
+    publish(0);
+    let mut picker = f.spawn(&["picker"], 18, 100);
+    let mut screen = Screen::new(18, 100);
+    for tick in 0..=3 {
+        publish(tick);
+        let last = format!("ROW_{:02}", 25 + tick);
+        wait_screen(&f, &mut picker, &mut screen, |rows| {
+            rows.last() == Some(&last)
+        });
+    }
+    picker.send(b"UUUUUU");
+    // At the actual start, one more upward gesture must leave the same frame.
+    wait_screen(&f, &mut picker, &mut screen, |rows| {
+        rows.first().is_some_and(|s| s == "ROW_01")
+    });
+    let top = screen.preview();
+    picker.send(b"K");
+    publish(4);
+    assert_stable(&f, &mut picker, &mut screen, &top, 2);
+    picker.send(b"\x1b[F");
+    wait_screen(&f, &mut picker, &mut screen, |rows| {
+        rows.last().is_some_and(|s| s == "ROW_29")
+    });
+    picker.send(b"q");
+    assert!(picker.finish().success());
+}
+
+#[test]
+fn older_history_on_demand() {
+    let mut fixture = setup("older-history");
+    fixture.env("CONTENT", fixture.path("content"));
+    fixture.write_json(
+        "snapshot.json",
+        &json!({
+            "focused_pane_id": "p1", "panes": [{"pane_id": "p1"}],
+            "agents": [agent("p1", "Agent", true)], "workspaces": [], "tabs": []
+        }),
+    );
+    publish_rows(&fixture, 1, 95, "");
+    let mut picker = fixture.spawn(&["picker"], 18, 100);
+    let mut screen = Screen::new(18, 100);
+    wait_screen(&fixture, &mut picker, &mut screen, |rows| {
+        rows.last().is_some_and(|row| row == "ROW_95")
+    });
+    let initial = fixture
+        .calls()
+        .into_iter()
+        .find(|call| call.starts_with(&["pane".into(), "read".into()]))
+        .unwrap()[6]
+        .parse::<usize>()
+        .unwrap();
+    assert!(
+        initial < 95,
+        "initial read must be a limited tail: {initial}"
+    );
+
+    let height = screen.preview().len();
+    assert!(height > 1);
+    let mut last = 95usize;
+    let mut pages = 0;
+    while last > height {
+        picker.send(b"U");
+        last = last.saturating_sub(height / 2).max(height);
+        let expected: Vec<_> = (last + 1 - height..=last)
+            .map(|row| format!("ROW_{row:02}"))
+            .collect();
+        let deadline = Instant::now() + WAIT;
+        loop {
+            screen.pump(&mut picker);
+            if screen.preview() == expected {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "expected {expected:?}, got {:?}, calls {:?}",
+                screen.preview(),
+                fixture.calls()
+            );
+        }
+        let settled = Instant::now() + Duration::from_millis(200);
+        while Instant::now() < settled {
+            screen.pump(&mut picker);
+            assert_eq!(screen.preview(), expected, "viewport moved after paging");
+        }
+        pages += 1;
+        if pages == 1 {
+            publish_rows(&fixture, 1, 98, "");
+            assert_stable(&fixture, &mut picker, &mut screen, &expected, 2);
+        }
+    }
+    let top = screen.preview();
+    assert_eq!(top.first().map(String::as_str), Some("ROW_01"));
+    picker.send(b"U");
+    assert_stable(&fixture, &mut picker, &mut screen, &top, 2);
+    assert!(
+        fixture.calls().iter().any(|call| {
+            call.starts_with(&["pane".into(), "read".into()])
+                && call[6].parse::<usize>().unwrap() > initial
+        }),
+        "older history must require a larger read"
+    );
+
+    picker.send(b"\x1b[F");
+    wait_screen(&fixture, &mut picker, &mut screen, |rows| {
+        rows.last().is_some_and(|row| row == "ROW_98")
+    });
+    publish_rows(&fixture, 1, 99, "");
+    wait_screen(&fixture, &mut picker, &mut screen, |rows| {
+        rows.last().is_some_and(|row| row == "ROW_99")
+    });
+    picker.send(b"q");
+    assert!(picker.finish().success());
+}
+
+#[test]
 fn origin_viewport() {
     keeps_preview_viewport("p1");
 }
@@ -213,6 +351,129 @@ fn origin_viewport() {
 #[test]
 fn attached_viewport() {
     keeps_preview_viewport("outside");
+}
+
+fn wrapped_rows(screen: &Screen) -> Vec<String> {
+    let marker = regex::Regex::new(r"(?:ROW|END)_[0-9]{2}").unwrap();
+    screen
+        .frame
+        .iter()
+        .filter_map(|row| {
+            let text = row[43..97].iter().collect::<String>();
+            marker.find(&text).map(|value| value.as_str().to_owned())
+        })
+        .collect()
+}
+
+fn wait_wrapped(
+    fixture: &Fixture,
+    picker: &mut Pty,
+    screen: &mut Screen,
+    ready: impl Fn(&[String]) -> bool,
+) {
+    let deadline = Instant::now() + WAIT;
+    while Instant::now() < deadline {
+        screen.pump(picker);
+        if ready(&wrapped_rows(screen)) {
+            return;
+        }
+    }
+    panic!(
+        "wrapped preview {:?}, Herdr events {:?}",
+        wrapped_rows(screen),
+        fixture.events()
+    );
+}
+
+#[test]
+fn wrapped_live_follow_resumes_at_exact_bottom() {
+    let mut fixture = setup("wrapped-follow");
+    fixture.env("CONTENT", fixture.path("content"));
+    fixture.write_json(
+        "snapshot.json",
+        &json!({
+            "focused_pane_id": "p1", "panes": [{"pane_id": "p1"}],
+            "agents": [agent("p1", "Agent", true)], "workspaces": [], "tabs": []
+        }),
+    );
+    let publish = |last: u8| {
+        let content: String = (1..=last)
+            .map(|row| format!("ROW_{row:02}{}END_{row:02}\n", "x".repeat(75)))
+            .collect();
+        fixture.write("content", &content);
+    };
+    publish(30);
+    let mut picker = fixture.spawn(&["picker"], 18, 100);
+    let mut screen = Screen::new(18, 100);
+    wait_wrapped(&fixture, &mut picker, &mut screen, |rows| {
+        rows.last().is_some_and(|row| row.contains("END_30"))
+    });
+    let bottom = wrapped_rows(&screen);
+    assert!(bottom.len() >= 4, "{bottom:?}");
+    assert!(bottom[bottom.len() - 2].contains("ROW_30"), "{bottom:?}");
+    picker.send(b"K");
+    wait_wrapped(&fixture, &mut picker, &mut screen, |rows| {
+        rows.last().is_some_and(|row| row.contains("END_29"))
+    });
+    let frozen = wrapped_rows(&screen);
+    assert_eq!(&frozen[2..], &bottom[..bottom.len() - 2]);
+    publish(31);
+    fixture.write_json(
+        "snapshot.json",
+        &json!({
+            "focused_pane_id": "p1", "panes": [{"pane_id": "p1"}],
+            "agents": [agent("p1", "Updated Task", true)], "workspaces": [], "tabs": []
+        }),
+    );
+    let count = reads(&fixture, "p1");
+    let deadline = Instant::now() + WAIT;
+    while reads(&fixture, "p1") < count + 2 {
+        assert!(Instant::now() < deadline);
+        screen.pump(&mut picker);
+        assert_eq!(wrapped_rows(&screen), frozen);
+    }
+    picker.send(b"\x1b[1;2B");
+    wait_wrapped(&fixture, &mut picker, &mut screen, |rows| {
+        rows.last().is_some_and(|row| row.contains("ROW_30"))
+    });
+    publish(32);
+    let count = reads(&fixture, "p1");
+    while reads(&fixture, "p1") < count + 2 {
+        assert!(Instant::now() < deadline);
+        screen.pump(&mut picker);
+        assert!(wrapped_rows(&screen)
+            .last()
+            .is_some_and(|row| row.contains("ROW_30")));
+    }
+    picker.send(b"\x1b[1;2B");
+    wait_wrapped(&fixture, &mut picker, &mut screen, |rows| {
+        rows.last().is_some_and(|row| row.contains("END_32"))
+    });
+    picker.send(b"J");
+    publish(33);
+    wait_wrapped(&fixture, &mut picker, &mut screen, |rows| {
+        rows.last().is_some_and(|row| row.contains("END_33"))
+    });
+    picker.send(b"K");
+    wait_wrapped(&fixture, &mut picker, &mut screen, |rows| {
+        rows.last().is_some_and(|row| row.contains("END_32"))
+    });
+    publish(34);
+    picker.send(b"J");
+    wait_wrapped(&fixture, &mut picker, &mut screen, |rows| {
+        rows.last().is_some_and(|row| row.contains("END_34"))
+    });
+    picker.send(b"K");
+    wait_wrapped(&fixture, &mut picker, &mut screen, |rows| {
+        rows.last().is_some_and(|row| row.contains("END_33"))
+    });
+    publish(35);
+    picker.send(b"D");
+    wait_wrapped(&fixture, &mut picker, &mut screen, |rows| {
+        rows.last().is_some_and(|row| row.contains("END_35"))
+    });
+    picker.send(b"q");
+    assert!(picker.finish().success());
 }
 
 #[test]
@@ -227,20 +488,101 @@ fn tall_preview_fills_with_recent_history() {
             "agents": [agent("p1", "Agent", true)], "workspaces": [], "tabs": []
         }),
     );
-    publish_rows(&fixture, 1, 90, "");
+    publish_rows(&fixture, 1, 80, "");
     let mut picker = fixture.spawn(&["picker"], 48, 100);
     let mut screen = Screen::new(48, 100);
     wait_screen(&fixture, &mut picker, &mut screen, |rows| {
+        rows.last().is_some_and(|row| row == "ROW_80")
+    });
+    publish_rows(&fixture, 1, 90, "");
+    wait_screen(&fixture, &mut picker, &mut screen, |rows| {
         rows.len() > 30 && rows.last().is_some_and(|row| row == "ROW_90")
     });
-    let rows = screen.preview();
-    let requested = fixture
-        .calls()
-        .into_iter()
-        .rev()
-        .find(|c| c.starts_with(&["pane".into(), "read".into()]))
-        .unwrap();
-    assert_eq!(rows.len(), requested[6].parse::<usize>().unwrap());
+    let bottom = screen.preview();
+    picker.send(b"udK");
+    wait_screen(&fixture, &mut picker, &mut screen, |rows| {
+        rows.last().is_some_and(|row| row == "ROW_88")
+    });
+    picker.send(b"J");
+    wait_screen(&fixture, &mut picker, &mut screen, |rows| rows == bottom);
+    picker.send(b"D");
+    screen.pump(&mut picker);
+    publish_rows(&fixture, 1, 95, "");
+    wait_screen(&fixture, &mut picker, &mut screen, |rows| {
+        rows.last().is_some_and(|row| row == "ROW_95")
+    });
+    let bottom = screen.preview();
+    picker.send(b"U");
+    let half_page_tail = &bottom[bottom.len() - 1 - bottom.len() / 2];
+    wait_screen(&fixture, &mut picker, &mut screen, |rows| {
+        rows.last() == Some(half_page_tail)
+    });
+    picker.send(b"D");
+    wait_screen(&fixture, &mut picker, &mut screen, |rows| rows == bottom);
+    picker.send(b"\x1b]11;rgb:a8a8/a8a8/a8a8\x1b\\KKKK");
+    wait_screen(&fixture, &mut picker, &mut screen, |rows| {
+        rows.last().is_some_and(|row| row == "ROW_87") && rows.len() == bottom.len()
+    });
+    let scrolled = screen.preview();
+    assert_stable(&fixture, &mut picker, &mut screen, &scrolled, 2);
+    let updated = json!({"focused_pane_id":"p1","panes":[{"pane_id":"p1"}],"agents":[agent("p1", "Updated Task", true)],"workspaces":[],"tabs":[]});
+    fixture.write_json("snapshot.json", &updated);
+    publish_rows(&fixture, 1, 99, "_EDIT");
+    assert_stable(&fixture, &mut picker, &mut screen, &scrolled, 2);
+    picker.send(b"JJJJ");
+    wait_screen(&fixture, &mut picker, &mut screen, |rows| {
+        rows.last().is_some_and(|row| row == "ROW_99_EDIT")
+    });
+    picker.send(b"K");
+    screen.pump(&mut picker);
+    picker.send(b"K");
+    wait_screen(&fixture, &mut picker, &mut screen, |rows| {
+        rows.last().is_some_and(|row| row == "ROW_95_EDIT")
+    });
+    let before_resize = screen.preview();
+    picker.resize(48, 101);
+    assert_stable(&fixture, &mut picker, &mut screen, &before_resize, 2);
+    picker.clear();
+    picker.send(b"\x1b[F");
+    picker.wait_for(b"Updated Task");
+    wait_screen(&fixture, &mut picker, &mut screen, |rows| {
+        rows.last().is_some_and(|row| row == "ROW_99_EDIT")
+    });
+    picker.send(b"q");
+    assert!(picker.finish().success());
+}
+
+#[test]
+fn held_preview_survives_resize_at_top_and_near_bottom() {
+    let mut fixture = setup("held-resize-edges");
+    fixture.env("CONTENT", fixture.path("content"));
+    fixture.write_json(
+        "snapshot.json",
+        &json!({
+            "focused_pane_id": "p1", "panes": [{"pane_id": "p1"}],
+            "agents": [agent("p1", "Agent", true)], "workspaces": [], "tabs": []
+        }),
+    );
+    publish_rows(&fixture, 1, 80, "");
+    let mut picker = fixture.spawn(&["picker"], 48, 100);
+    let mut screen = Screen::new(48, 100);
+    wait_screen(&fixture, &mut picker, &mut screen, |rows| {
+        rows.last().is_some_and(|row| row == "ROW_80")
+    });
+    picker.send(b"\x1b[1;2A");
+    wait_screen(&fixture, &mut picker, &mut screen, |rows| {
+        rows.last().is_some_and(|row| row == "ROW_79")
+    });
+    let near_bottom = screen.preview();
+    picker.resize(48, 101);
+    assert_stable(&fixture, &mut picker, &mut screen, &near_bottom, 2);
+    picker.send(b"UUUUUU");
+    wait_screen(&fixture, &mut picker, &mut screen, |rows| {
+        rows.first().is_some_and(|row| row == "ROW_01")
+    });
+    let top = screen.preview();
+    picker.resize(48, 100);
+    assert_stable(&fixture, &mut picker, &mut screen, &top, 2);
     picker.send(b"q");
     assert!(picker.finish().success());
 }

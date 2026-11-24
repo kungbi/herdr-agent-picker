@@ -7,7 +7,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 const ESC: &[u8] = b"\x1b";
-const HEADER: &[u8] = b"Ctrl+D/U";
+// Use the visible prefix; narrow previews clip the later shortcut hints.
+const HEADER: &[u8] = b"1-9/Enter: focus";
 const HIGHLIGHT: &str = "\x1b[0;39;48;5;236m";
 
 struct ReminderStore<'a>(&'a Fixture);

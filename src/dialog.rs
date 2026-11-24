@@ -248,6 +248,8 @@ impl Dialog {
             }
         }
         let key = match b[0] {
+            // The picker relay encodes a standalone Esc as Ctrl+] on the inner tty.
+            0x1d if std::env::var_os("HERDR_AGENT_PICKER_INPUT_PATH").is_some() => "escape",
             27 => {
                 let mut seq = vec![];
                 while self.ready(40) {

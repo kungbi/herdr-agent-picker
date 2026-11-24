@@ -216,7 +216,9 @@ fn exercise_picker(name: &str, count: usize, keys: &[&[u8]], expected: Option<&s
             ]),
         "{calls:?}",
     );
-    assert!(calls.iter().any(|call| call == READ_PREVIEW), "{calls:?}");
+    let mut live_read = READ_PREVIEW.to_vec();
+    live_read[6] = "40"; // Two pages in this fixture's 20-row preview.
+    assert!(calls.iter().any(|call| call == &live_read), "{calls:?}");
     assert_eq!(fixture.focus(), None, "opening the picker changed focus");
     if count <= 12 {
         assert_sections(&output, count, opened, history);
