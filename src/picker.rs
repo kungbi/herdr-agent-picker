@@ -247,9 +247,17 @@ pub fn refresh_rows(path: &Path) -> Result<String> {
     }
 }
 fn history_prefix(candidates: &[String], rows: &[String]) -> Option<usize> {
+    if rows.is_empty() {
+        return None;
+    }
+    // A complete frozen window can be replayed verbatim. Match from the tail
+    // so repeated lines retain their multiplicity; exclude newer trailing rows.
+    if candidates.ends_with(rows) {
+        return Some(candidates.len() - rows.len());
+    }
     let mut best = (0, 0);
     let mut ambiguous = false;
-    for (i, row) in candidates.iter().enumerate() {
+    for (i, row) in candidates.iter().enumerate().rev() {
         if rows.first() != Some(row) {
             continue;
         }
@@ -258,18 +266,91 @@ fn history_prefix(candidates: &[String], rows: &[String]) -> Option<usize> {
             .zip(rows)
             .take_while(|(a, b)| a == b)
             .count();
+        if n == rows.len() {
+            return Some(i);
+        }
         if n > best.1 {
             best = (i, n);
             ambiguous = false;
         } else if n == best.1 {
             ambiguous = true;
         }
-        if ambiguous && n == rows.len() {
-            break;
-        }
     }
     (!ambiguous && best.1 >= rows.len().min(2)).then_some(best.0)
 }
+fn history_anchor(
+    candidates: &[String],
+    rows: &[String],
+    top: usize,
+    height: usize,
+) -> Option<(usize, usize)> {
+    let styles = regex::Regex::new(r"\x1b\[[0-9;:]*m").unwrap();
+    let plain = |rows: &[String]| {
+        rows.iter()
+            .map(|row| {
+                let plain = styles.replace_all(row, "");
+                let trimmed = plain.trim_start();
+                trimmed
+                    .strip_prefix('║')
+                    .or_else(|| trimmed.strip_prefix("C:\\>"))
+                    .map(|s| s.trim_start().to_owned())
+                    .unwrap_or_else(|| plain.into_owned())
+            })
+            .collect::<Vec<_>>()
+    };
+    let candidates = plain(candidates);
+    let rows = plain(rows);
+    let mut best = None;
+    for start in top..top.saturating_add(height).min(rows.len()) {
+        if let Some(index) = history_prefix(&candidates, &rows[start..]) {
+            let matched = candidates[index..]
+                .iter()
+                .zip(&rows[start..])
+                .take_while(|(a, b)| a == b)
+                .count();
+            // shortcut: single-row overlaps cannot be paged safely; use stable row IDs to support them.
+            if matched >= 2 && best.is_none_or(|(_, _, length)| matched > length) {
+                best = Some((index, start, matched));
+            }
+        }
+    }
+    best.map(|(index, start, _)| (index, start))
+}
+fn cached_source<'a>(sources: &'a [Value], pane: &str, terminal: &str) -> Option<&'a str> {
+    sources
+        .iter()
+        .find(|source| {
+            source["pane"].as_str() == Some(pane)
+                && source["terminal"].as_str() == Some(terminal)
+                && (source["binding"].is_null()
+                    || crate::hermes_history::valid(pane, &source["binding"]))
+        })?
+        .get("text")?
+        .as_str()
+}
+fn history_progress(anchor: Option<(usize, usize)>) -> bool {
+    anchor.is_some_and(|(prefix, start)| prefix > start)
+}
+
+fn queue_frame(
+    path: &Path,
+    window: &Value,
+    rows: &[String],
+    start: usize,
+    height: usize,
+) -> Result<()> {
+    let visible = &rows[start..(start + height).min(rows.len())];
+    atomic_write(
+        &path.with_extension("history.frame"),
+        &serde_json::to_vec(&(
+            &window["pane"],
+            &window["terminal"],
+            &window["semantic"],
+            visible.join("\n"),
+        ))?,
+    )
+}
+
 pub fn scroll(path: &Path, step: i32, pane: &str) -> Result<()> {
     let _guard = lock(&path.with_extension("viewport-lock"), false)?;
     let extent = path.with_extension("extent");
@@ -291,32 +372,110 @@ pub fn scroll(path: &Path, step: i32, pane: &str) -> Result<()> {
         3 => (height / 2).max(1),
         _ => return Err("Invalid scroll step".into()),
     };
-    if step < 0 && old.saturating_add(size) > max {
+    if step < 0 && old.saturating_add(size) >= max {
         let window_path = path.with_extension("window");
         let mut window: Value = serde_json::from_slice(&fs::read(&window_path)?)?;
         if window["pane"].as_str() != Some(pane) {
             return Ok(());
         }
+        if !window["semantic"].is_null() && !crate::hermes_history::valid(pane, &window["semantic"])
+        {
+            return Ok(());
+        }
         if window["exhausted"] != true {
+            let snapshot_binding = crate::hermes_history::binding(pane);
             let rows: Vec<String> = serde_json::from_value(window["rows"].clone())?;
             let width = window["width"].as_u64().ok_or("Invalid preview width")? as usize;
             let limit = window["limit"].as_u64().ok_or("Invalid preview limit")? as u16;
             // shortcut: reads stop at 65,535 lines, widen the limit type for deeper history.
             let next_limit = limit.saturating_mul(2);
-            let text = crate::preview::read_snapshot_lines(pane, next_limit)?;
-            let candidates = crate::preview::visual_rows(&text, width.max(1));
-            let prefix = history_prefix(&candidates, &rows);
+            let top = max - old;
+            if let Some(terminal) = window["terminal"].as_str() {
+                let current = request(&["pane", "get", pane])?;
+                if current["pane"]["terminal_id"].as_str() != Some(terminal) {
+                    return Ok(());
+                }
+            }
+            let cached = window["terminal"].as_str().and_then(|terminal| {
+                let data = fs::read(path.with_extension("sources")).ok()?;
+                let sources: Vec<Value> = serde_json::from_slice(&data).ok()?;
+                cached_source(&sources, pane, terminal).map(str::to_owned)
+            });
+            let cached_rows = cached
+                .as_ref()
+                .map(|text| crate::preview::visual_rows(text, width.max(1)));
+            let cached_anchor = cached_rows
+                .as_ref()
+                .and_then(|candidates| history_anchor(candidates, &rows, top, height))
+                .filter(|anchor| history_progress(Some(*anchor)));
+            let (candidates, anchor, short) = if let Some(anchor) = cached_anchor {
+                (cached_rows.unwrap(), Some(anchor), false)
+            } else {
+                let text = crate::preview::read_snapshot_lines(pane, next_limit, "text")
+                    .unwrap_or_default();
+                let styled = crate::preview::read_snapshot_lines(pane, next_limit, "ansi")
+                    .map(|ansi| crate::preview::styled_history(&text, &ansi))
+                    .unwrap_or_else(|_| text.clone());
+                let candidates = crate::preview::visual_rows(&styled, width.max(1));
+                let anchor = history_anchor(&candidates, &rows, top, height);
+                (
+                    candidates,
+                    anchor,
+                    text.lines().count() < usize::from(next_limit),
+                )
+            };
+            let mut from_transcript = false;
+            let (candidates, anchor) = if !history_progress(anchor) && snapshot_binding.is_some() {
+                match crate::hermes_history::read(pane, width) {
+                    Some((owner, older)) if Some(&owner) == snapshot_binding.as_ref() => {
+                        let seam = history_anchor(&older, &rows, top, height).or_else(|| {
+                            // Hermes indents rendered answer lines, but not the saved message.
+                            let body = rows
+                                .iter()
+                                .map(|s| s.strip_prefix("    ").unwrap_or(s).to_owned())
+                                .collect::<Vec<_>>();
+                            history_anchor(&older, &body, top, height)
+                        });
+                        from_transcript = true;
+                        (older, seam)
+                    }
+                    _ => (candidates, anchor),
+                }
+            } else {
+                (candidates, anchor)
+            };
             window["limit"] = json!(next_limit);
-            window["exhausted"] =
-                json!(text.lines().count() < usize::from(next_limit) || next_limit == u16::MAX);
-            if let Some(prefix) = prefix.filter(|prefix| *prefix > 0) {
+            window["exhausted"] = json!(
+                anchor.is_some()
+                    && !history_progress(anchor)
+                    && window["terminal"].is_null()
+                    && (short || next_limit == u16::MAX)
+            );
+            if let Some((prefix, start)) = anchor.filter(|anchor| history_progress(Some(*anchor))) {
+                if crate::hermes_history::binding(pane) != snapshot_binding {
+                    return Ok(());
+                }
+                let (prefix, start) = if from_transcript {
+                    (prefix - start, 0)
+                } else {
+                    (prefix, start)
+                };
                 let mut expanded = candidates[..prefix].to_vec();
-                expanded.extend(rows);
+                // The retained window may have different styles than this snapshot.
+                expanded.last_mut().unwrap().push_str("\x1b[0m");
+                expanded.extend_from_slice(&rows[start..]);
+                window["semantic"] = json!(snapshot_binding);
                 window["rows"] = json!(expanded);
+                if from_transcript {
+                    window["exhausted"] = json!(true);
+                }
                 atomic_write(&window_path, serde_json::to_string(&window)?.as_bytes())?;
                 atomic_write(&path.with_extension("history.expanded"), b"")?;
                 let new_max = expanded.len().saturating_sub(height);
-                let target = prefix.saturating_sub(size.saturating_sub(max - old));
+                let target = prefix
+                    .saturating_add(top)
+                    .saturating_sub(start)
+                    .saturating_sub(size);
                 atomic_write(
                     &history,
                     new_max.saturating_sub(target).to_string().as_bytes(),
@@ -325,14 +484,7 @@ pub fn scroll(path: &Path, step: i32, pane: &str) -> Result<()> {
                     &path.with_extension("extent"),
                     format!("{} {}", expanded.len(), height).as_bytes(),
                 )?;
-                if path.with_extension("history.resized").exists() {
-                    println!("refresh-preview");
-                    return Ok(());
-                }
-                println!(
-                    "change-preview-window(right:60%:nowrap:nofollow:+{})+refresh-preview",
-                    target + 1
-                );
+                queue_frame(path, &window, &expanded, target.min(new_max), height)?;
                 return Ok(());
             }
             atomic_write(&window_path, serde_json::to_string(&window)?.as_bytes())?;
@@ -355,6 +507,23 @@ pub fn scroll(path: &Path, step: i32, pane: &str) -> Result<()> {
         println!("preview-bottom");
     } else {
         atomic_write(&history, next.to_string().as_bytes())?;
+        if path.with_extension("history.expanded").exists() {
+            let window: Value = serde_json::from_slice(&fs::read(path.with_extension("window"))?)?;
+            if window["pane"].as_str() == Some(pane)
+                && (window["semantic"].is_null()
+                    || crate::hermes_history::valid(pane, &window["semantic"]))
+            {
+                let rows: Vec<String> = serde_json::from_value(window["rows"].clone())?;
+                queue_frame(
+                    path,
+                    &window,
+                    &rows,
+                    max.saturating_sub(next).min(rows.len()),
+                    height,
+                )?;
+            }
+            return Ok(());
+        }
         if path.with_extension("history.resized").exists() {
             println!("refresh-preview");
             return Ok(());
@@ -503,7 +672,48 @@ pub fn main() -> Result<()> {
 mod tests {
     use super::*;
     #[test]
-    fn history_anchor_requires_an_unambiguous_match() {
+    fn short_history_does_not_exhaust_while_the_window_grows() {
+        assert!(history_progress(Some((74, 0))));
+        assert!(history_progress(Some((2, 1))));
+        assert!(!history_progress(Some((1, 1))));
+        assert!(!history_progress(None));
+    }
+    #[test]
+    fn cached_history_preserves_original_colors() {
+        let text = "old red\nold green\nnew\n";
+        let ansi = "\x1b[31mold red\x1b[0m\n\x1b[32mold green\x1b[0m\nnew\n";
+        let sources = vec![
+            json!({"pane":"p1", "terminal":"t1", "text":crate::preview::styled_history(text, ansi)}),
+        ];
+        let rows = crate::preview::visual_rows(cached_source(&sources, "p1", "t1").unwrap(), 80);
+        assert!(rows[0].contains("\x1b[31mold red"));
+        assert!(rows[1].contains("\x1b[32mold green"));
+    }
+    #[test]
+    fn attached_history_uses_only_matching_pre_attach_source() {
+        let text: String = (1..=120).map(|n| format!("CX{n:03}\n")).collect();
+        let visible: Vec<_> = (94..=120)
+            .map(|n| format!("\x1b[32mCX{n:03}\x1b[0m"))
+            .collect();
+        let sources = vec![
+            json!({"pane":"p2", "terminal":"t1", "text":"wrong pane\n"}),
+            json!({"pane":"p1", "terminal":"old", "text":"wrong terminal\n"}),
+            json!({"pane":"p1", "terminal":"t1", "text":text}),
+        ];
+        assert_eq!(cached_source(&sources, "p1", "other"), None);
+        assert_eq!(cached_source(&sources, "other", "t1"), None);
+        let candidates =
+            crate::preview::visual_rows(cached_source(&sources, "p1", "t1").unwrap(), 50);
+        let (prefix, start) = history_anchor(&candidates, &visible, 0, 10).unwrap();
+        let mut rows = candidates[..prefix].to_vec();
+        rows.extend_from_slice(&visible[start..]);
+        assert_eq!(rows.len(), 120);
+        assert_eq!(rows[0], "CX001");
+        assert_eq!(rows[92], "CX093");
+        assert_eq!(rows[93], "\x1b[32mCX094\x1b[0m");
+    }
+    #[test]
+    fn history_anchor_accepts_full_replays_but_rejects_ambiguous_fragments() {
         let rows = |items: &[&str]| items.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         assert_eq!(
             history_prefix(&rows(&["old", "A", "B", "new"]), &rows(&["A", "B", "tail"])),
@@ -511,12 +721,55 @@ mod tests {
         );
         assert_eq!(
             history_prefix(&rows(&["A", "B", "A", "B"]), &rows(&["A", "B"])),
+            Some(2)
+        );
+        assert_eq!(
+            history_prefix(
+                &rows(&["old", "A", "B", "A", "B", "new"]),
+                &rows(&["A", "B"])
+            ),
+            Some(3)
+        );
+        assert_eq!(
+            history_prefix(
+                &rows(&["A", "B", "x", "A", "B", "y"]),
+                &rows(&["A", "B", "tail"])
+            ),
             None
         );
         assert_eq!(
             history_prefix(&rows(&["old", "A", "other"]), &rows(&["A", "B"])),
             None
         );
+    }
+    #[test]
+    fn history_anchor_normalizes_hermes_first_line() {
+        let candidates = vec!["older".into(), "the question".into(), "second line".into()];
+        let rows = vec!["║ the question".into(), "second line".into()];
+        assert_eq!(history_anchor(&candidates, &rows, 0, 2), Some((1, 0)));
+        let rows = vec!["C:\\> the question".into(), "second line".into()];
+        assert_eq!(history_anchor(&candidates, &rows, 0, 2), Some((1, 0)));
+    }
+    #[test]
+    fn history_anchor_skips_sticky_header_and_preserves_body_order() {
+        let candidates: Vec<_> = (1..=120).map(|n| format!("CX{n:03}")).collect();
+        let mut rows = vec!["truncated sticky prompt".to_string()];
+        rows.extend((69..=120).map(|n| format!("\x1b[32mCX{n:03}\x1b[0m")));
+        rows.push("footer".to_string());
+        let (prefix, start) = history_anchor(&candidates, &rows, 0, 12).unwrap();
+        assert_eq!((prefix, start), (68, 1));
+        let mut expanded = candidates[..prefix].to_vec();
+        expanded.extend_from_slice(&rows[start..]);
+        let plain = regex::Regex::new(r"\x1b\[[0-9;:]*m").unwrap();
+        assert_eq!(
+            expanded[..120]
+                .iter()
+                .map(|row| plain.replace_all(row, "").into_owned())
+                .collect::<Vec<_>>(),
+            candidates
+        );
+        assert!(expanded[68].starts_with("\x1b[32m"));
+        assert_eq!(prefix.saturating_sub(start).saturating_sub(2), 65);
     }
     #[test]
     fn preview_origin_uses_session_focus_or_plugin_context_without_guessing() {

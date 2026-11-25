@@ -1,0 +1,53 @@
+diff --git a/hermes_cli/main_tui_launch.py b/hermes_cli/main_tui_launch.py
+index 9c44f7e0be..eff2c78315 100644
+--- a/hermes_cli/main_tui_launch.py
++++ b/hermes_cli/main_tui_launch.py
+@@ -383,6 +383,38 @@ def _wait_for_enter(prompt: str, timeout: float) -> None:
+     print(file=sys.stderr)
+
+
++@contextlib.contextmanager
++def _picker_binding(env: dict, marker: str):
++    # The live marker follows /new and resume; a pid lease dies with this launcher.
++    work = Path.home() / ".hermes/profiles/work"
++    pane = os.environ.get("HERDR_PANE_ID")
++    if not pane or os.environ.get("HERDR_ENV") != "1" or env.get("HERMES_HOME") != str(work):
++        yield
++        return
++    lease = None
++    path = work / "cache/picker-bindings" / str(os.getpid())
++    try:
++        import fcntl
++        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
++        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600)
++        lease = os.fdopen(fd, "w")
++        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
++        lease.truncate(0)
++        json.dump({"pane": pane, "marker": marker}, lease)
++        lease.flush()
++    except (ImportError, OSError):
++        if lease:
++            lease.close()
++        lease = None
++    try:
++        yield
++    finally:
++        if lease:
++            with contextlib.suppress(OSError):
++                path.unlink()
++            lease.close()
++
++
+ def _run_tui(argv: list[str], cwd: Path, env: dict, notices: list[str]) -> int:
+     """Run the TUI. Its first write clears the screen and the scrollback, so when someone is at
+     the terminal a launch notice waits for Enter (at most a minute) first; every notice is printed
+@@ -509,7 +541,8 @@ def _launch_tui(
+     argv, cwd = _make_tui_argv(tui_dir, tui_dev, notices)
+     code: Optional[int] = None
+     try:
+-        code = _run_tui(argv, cwd, env, notices)
++        with _picker_binding(env, active_session_file):
++            code = _run_tui(argv, cwd, env, notices)
+
+         if code in {0, 130}:
+             _print_tui_exit_summary(resume_session_id, active_session_file)

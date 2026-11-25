@@ -136,6 +136,13 @@ fn main() {
         ["terminal", "attach"] => {
             assert_eq!(args.len(), 3, "no takeover allowed");
             let pane = &args[2];
+            if flag("CROSS_TAB_CONTENT") {
+                fs::write(
+                    Path::new(&file("CROSS_TAB_CONTENT")).join(format!("{pane}.attached")),
+                    "",
+                )
+                .unwrap();
+            }
             let mut size = std::mem::MaybeUninit::<libc::winsize>::zeroed();
             unsafe {
                 libc::ioctl(0, libc::TIOCGWINSZ, size.as_mut_ptr());
@@ -214,31 +221,68 @@ fn main() {
             return;
         }
         ["pane", "read"] => {
-            // A direct fixture read may request just --format ansi to compare styles.
             assert!(
-                args[3..] == ["--format", "ansi"]
+                args.len() == 5
+                    && args[3] == "--format"
+                    && ["ansi", "text"].contains(&args[4].as_str())
                     || args.len() == 9
                         && args[6].parse::<u16>().is_ok_and(|n| n > 0)
-                        && args[3..]
-                            == [
-                                "--source",
-                                "recent-unwrapped",
-                                "--lines",
-                                &args[6],
-                                "--format",
-                                "ansi"
-                            ]
+                        && args[3..6] == ["--source", "recent-unwrapped", "--lines"]
+                        && args[7] == "--format"
+                        && ["ansi", "text"].contains(&args[8].as_str())
             );
-            log("EVENTS", &format!("read {}", args[2]));
+            let event = if args.last().is_some_and(|s| s == "text") {
+                "history-read"
+            } else if args.get(6).is_some_and(|s| s == "2048") {
+                "styled-history-read"
+            } else {
+                "read"
+            };
+            log("EVENTS", &format!("{event} {}", args[2]));
             if flag("FAIL_READ") || d["read_error"] == true {
                 std::process::exit(1);
             }
-            if flag("SNAPSHOTS") {
+            if flag("CROSS_TAB_CONTENT") {
+                let root = file("CROSS_TAB_CONTENT");
+                let attached = Path::new(&root)
+                    .join(format!("{}.attached", args[2]))
+                    .exists();
+                let format = args.last().unwrap();
+                log(
+                    "EVENTS",
+                    &format!(
+                        "read-state {} {format} {}",
+                        args[2],
+                        if attached { "attached" } else { "before" }
+                    ),
+                );
+                let text = fs::read_to_string(Path::new(&root).join(&args[2])).unwrap();
+                let limit = args
+                    .get(6)
+                    .map(|n| n.parse::<usize>().unwrap())
+                    .unwrap_or(usize::MAX);
+                let limit = if attached { limit.min(37) } else { limit };
+                for line in text
+                    .lines()
+                    .skip(text.lines().count().saturating_sub(limit))
+                {
+                    if format == "ansi" {
+                        println!("\x1b[32m{line}\x1b[0m");
+                    } else {
+                        println!("{line}");
+                    }
+                }
+            } else if flag("SNAPSHOTS") {
                 let map: Value =
                     serde_json::from_slice(&fs::read(file("SNAPSHOTS")).unwrap()).unwrap();
                 print!("{}", map[&args[2]].as_str().unwrap());
             } else if flag("CONTENT") {
-                let text = fs::read_to_string(file("CONTENT")).unwrap();
+                let content = if args.last().is_some_and(|s| s == "text") && flag("TEXT_CONTENT") {
+                    "TEXT_CONTENT"
+                } else {
+                    "CONTENT"
+                };
+                let text = fs::read_to_string(file(content)).unwrap();
                 let limit = args
                     .get(6)
                     .map(|n| n.parse::<usize>().unwrap())
