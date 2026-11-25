@@ -339,8 +339,8 @@ impl SnapshotStream {
                     && next[..n].iter().any(|line| !line.trim().is_empty())
             })
             .unwrap_or(0);
-        if overlap == 0 && self.emitted > 0 {
-            // A working agent may repaint old rows. Replace the live buffer, not its history twice.
+        if overlap == 0 {
+            // A slow first read can leave fzf at the loading frame's offset. Reset it just like a repaint.
             out.write_all(b"\x1b[2J")?;
             self.emitted = 0;
             self.buffer.clear();
@@ -639,6 +639,7 @@ fn live_inner(pane: &str, path: &Path, origin: &str) -> Result<()> {
         );
     }
     let history = path.with_extension("history");
+    let viewport_guard = crate::util::lock(&history.with_extension("viewport-lock"), false)?;
     if history.exists() {
         if let Ok(data) = std::fs::read(history.with_extension("window")) {
             if let Ok(window) = serde_json::from_slice::<serde_json::Value>(&data) {
@@ -650,22 +651,16 @@ fn live_inner(pane: &str, path: &Path, origin: &str) -> Result<()> {
                     if let Ok(rows) = serde_json::from_value::<Vec<String>>(window["rows"].clone())
                     {
                         let mut out = std::io::stdout().lock();
-                        // After resize fzf may retain an offset from the old grid. Publish
-                        // the actual held viewport at offset zero instead of reusing it.
-                        let shown = if history.with_extension("history.resized").exists()
-                            || history.with_extension("history.expanded").exists()
-                        {
-                            let distance = std::fs::read_to_string(&history)?.parse::<usize>()?;
-                            let height = usize::from(lines);
-                            let start = rows.len().saturating_sub(height).saturating_sub(distance);
-                            atomic_write(
-                                &history.with_extension("extent"),
-                                format!("{} {}", rows.len(), height).as_bytes(),
-                            )?;
-                            &rows[start..(start + height).min(rows.len())]
-                        } else {
-                            &rows[..]
-                        };
+                        // A restarted preview can lose its offset, even on the same pane.
+                        let distance = std::fs::read_to_string(&history)?.parse::<usize>()?;
+                        let height = usize::from(lines);
+                        let start = rows.len().saturating_sub(height).saturating_sub(distance);
+                        atomic_write(&history.with_extension("history.resized"), b"")?;
+                        atomic_write(
+                            &history.with_extension("extent"),
+                            format!("{} {}", rows.len(), height).as_bytes(),
+                        )?;
+                        let shown = &rows[start..(start + height).min(rows.len())];
                         for row in shown {
                             writeln!(out, "{row}")?;
                         }
@@ -679,6 +674,7 @@ fn live_inner(pane: &str, path: &Path, origin: &str) -> Result<()> {
             }
         }
     }
+    drop(viewport_guard);
     let mut input = crate::interaction::Input::new(path)?;
     // Unknown origin is deliberately read-only too: guessing could resize the
     // visible pane. Keep the lock so a previous attachment is reaped first.
@@ -914,7 +910,7 @@ mod tests {
         };
         let mut out = Vec::new();
         stream.write("\x1b[32mA\x1b[0m\nB\n", &mut out).unwrap();
-        assert_eq!(out, b"\x1b[32mA\x1b[0m\nB\n");
+        assert_eq!(out, b"\x1b[2J\x1b[32mA\x1b[0m\nB\n");
         out.clear();
         for _ in 0..3 {
             stream.write("\x1b[32mA\x1b[0m\nB\n", &mut out).unwrap();
