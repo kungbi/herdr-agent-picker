@@ -188,6 +188,8 @@ impl Fixture {
             "ATTACHED",
             "RELEASED",
             "CONTENT",
+            "TEXT_CONTENT",
+            "CROSS_TAB_CONTENT",
             "SNAPSHOTS",
             "SNAPSHOT",
             "SLOW_REFRESH",
@@ -657,6 +659,9 @@ pub fn local_format(at: f64, fmt: &str) -> String {
 pub struct Screen {
     cells: Vec<Vec<char>>,
     pub frame: Vec<Vec<char>>,
+    colors: Vec<Vec<Option<Vec<usize>>>>,
+    pub frame_colors: Vec<Vec<Option<Vec<usize>>>>,
+    foreground: Option<Vec<usize>>,
     cursor: (usize, usize),
     saved: (usize, usize),
     pending: Vec<u8>,
@@ -670,6 +675,9 @@ impl Screen {
         Self {
             frame: cells.clone(),
             cells,
+            colors: vec![vec![None; columns]; rows],
+            frame_colors: vec![vec![None; columns]; rows],
+            foreground: None,
             cursor: (0, 0),
             saved: (0, 0),
             pending: Vec::new(),
@@ -683,6 +691,12 @@ impl Screen {
             grid.resize(rows, vec![' '; columns]);
             for row in grid {
                 row.resize(columns, ' ');
+            }
+        }
+        for grid in [&mut self.colors, &mut self.frame_colors] {
+            grid.resize(rows, vec![None; columns]);
+            for row in grid {
+                row.resize(columns, None);
             }
         }
         self.cursor = (self.cursor.0.min(rows - 1), self.cursor.1.min(columns - 1));
@@ -757,6 +771,7 @@ impl Screen {
                     _ => {
                         if let Some(width @ 1..) = ch.width() {
                             self.cells[*row][*col] = ch;
+                            self.colors[*row][*col] = self.foreground.clone();
                             *col = (*col + width).min(self.cells[0].len() - 1);
                         }
                     }
@@ -773,6 +788,7 @@ impl Screen {
             if args == "?7" && action == b'h' {
                 // fzf restores auto-wrap at the end of a repaint.
                 self.frame.clone_from(&self.cells);
+                self.frame_colors.clone_from(&self.colors);
             }
             return;
         }
@@ -819,7 +835,29 @@ impl Screen {
             }
             b's' => self.saved = (*row, *col),
             b'u' => (*row, *col) = self.saved,
-            b'm' | b'h' | b'l' | b'n' | b't' | b'q' => {}
+            b'm' => {
+                let codes: Vec<usize> = args.split(';').map(|v| v.parse().unwrap_or(0)).collect();
+                let mut i = 0;
+                while i < codes.len() {
+                    match codes[i] {
+                        0 | 39 => self.foreground = None,
+                        30..=37 | 90..=97 => self.foreground = Some(vec![codes[i]]),
+                        38 if codes.get(i + 1) == Some(&5) && i + 2 < codes.len() => {
+                            self.foreground = Some(codes[i..=i + 2].to_vec());
+                            i += 2;
+                        }
+                        38 if codes.get(i + 1) == Some(&2) && i + 4 < codes.len() => {
+                            self.foreground = Some(codes[i..=i + 4].to_vec());
+                            i += 4;
+                        }
+                        48 if codes.get(i + 1) == Some(&5) && i + 2 < codes.len() => i += 2,
+                        48 if codes.get(i + 1) == Some(&2) && i + 4 < codes.len() => i += 4,
+                        _ => {}
+                    }
+                    i += 1;
+                }
+            }
+            b'h' | b'l' | b'n' | b't' | b'q' => {}
             _ => panic!("unsupported CSI: {args} {}", char::from(action)),
         }
         *row = (*row).min(self.cells.len() - 1);

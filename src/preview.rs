@@ -1,7 +1,7 @@
 use crate::util::*;
 use regex::Regex;
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     env,
     fs::File,
     io::{Read, Write},
@@ -74,6 +74,14 @@ fn sanitize(text: &str) -> String {
     out
 }
 
+pub fn public_text(text: &str) -> String {
+    let text = sanitize(text);
+    Regex::new(r"\x1b\[[0-9;:]*m")
+        .unwrap()
+        .replace_all(&text, "")
+        .into_owned()
+}
+
 pub fn clean(text: &str) -> String {
     let sanitized = sanitize(text);
     let text = sanitized.as_str();
@@ -94,9 +102,27 @@ pub fn clean(text: &str) -> String {
         .filter(|(_, plain)| blank.is_match(plain))
         .map(|(_, p)| width(p))
         .collect();
+    // A viewport can cut off the blank row that normally identifies the frame.
+    let padded_edge = |row: &str| {
+        let body = row.strip_suffix(['│', '┃'])?;
+        (!body.trim().is_empty()
+            && !body.trim_start().starts_with(['│', '┃'])
+            && body.ends_with("    "))
+        .then(|| width(row))
+    };
+    let cropped_edges: HashSet<_> = rows
+        .windows(2)
+        .filter_map(|pair| {
+            let column = padded_edge(&pair[0].1)?;
+            (padded_edge(&pair[1].1) == Some(column)).then_some(column)
+        })
+        .collect();
     let mut output = String::new();
     for (index, (line, plain)) in rows.iter().enumerate() {
-        let line = if plain.ends_with(['│', '┃']) && frames.contains(&width(plain)) {
+        let line = if plain.ends_with(['│', '┃'])
+            && (frames.contains(&width(plain))
+                || padded_edge(plain).is_some_and(|col| cropped_edges.contains(&col)))
+        {
             edge.replace(line, "$1").into_owned()
         } else {
             line.to_string()
@@ -122,7 +148,7 @@ fn snapshot_limit() -> u16 {
         .saturating_mul(2)
         .max(30)
 }
-pub fn read_snapshot_lines(pane: &str, lines: u16) -> Result<String> {
+pub fn read_snapshot_lines(pane: &str, lines: u16, format: &str) -> Result<String> {
     command_output(
         Command::new(herdr()).args([
             "pane",
@@ -133,14 +159,102 @@ pub fn read_snapshot_lines(pane: &str, lines: u16) -> Result<String> {
             "--lines",
             &lines.to_string(),
             "--format",
-            "ansi",
+            format,
         ]),
         Duration::from_secs(3),
     )
     .map(|text| clean(&text))
 }
+pub fn styled_history(text: &str, ansi: &str) -> String {
+    let ansi = clean(ansi);
+    let styles = Regex::new(r"\x1b\[[0-9;:]*m").unwrap();
+    let plain = styles.replace_all(&ansi, "");
+    if plain.is_empty() || plain == ansi {
+        return text.to_owned();
+    }
+    let exact = text.find(plain.as_ref()).and_then(|start| {
+        let end = start + plain.len();
+        let next = start + text[start..].chars().next().unwrap().len_utf8();
+        ((start == 0 || text[..start].ends_with('\n'))
+            && (end == text.len() || plain.ends_with('\n') || text[end..].starts_with('\n'))
+            && !text[next..].contains(plain.as_ref()))
+        .then_some((start, end, 0, ansi.len()))
+    });
+    // shortcut: partial matches require two unique consecutive lines; use stable row IDs for more.
+    let mut spans = Vec::new();
+    if let Some(span) = exact {
+        spans.push(span);
+    } else {
+        let mut positions = HashMap::new();
+        let mut offset = 0;
+        for line in text.split_inclusive('\n') {
+            positions
+                .entry(line)
+                .and_modify(|p: &mut Option<usize>| *p = None)
+                .or_insert(Some(offset));
+            offset += line.len();
+        }
+        let lines: Vec<_> = ansi.split_inclusive('\n').collect();
+        let plain_lines: Vec<_> = lines
+            .iter()
+            .map(|line| styles.replace_all(line, "").into_owned())
+            .collect();
+        let mut counts = HashMap::new();
+        for line in &plain_lines {
+            *counts.entry(line.as_str()).or_insert(0usize) += 1;
+        }
+        let mut run: Option<(usize, usize, usize, usize, usize)> = None;
+        let mut ansi_offset = 0;
+        for (line, plain_line) in lines.iter().zip(&plain_lines) {
+            let position = positions
+                .get(plain_line.as_str())
+                .copied()
+                .flatten()
+                .filter(|_| counts[plain_line.as_str()] == 1);
+            run = match (run, position) {
+                (Some((start, end, astart, _, n)), Some(pos)) if pos == end => Some((
+                    start,
+                    end + plain_line.len(),
+                    astart,
+                    ansi_offset + line.len(),
+                    n + 1,
+                )),
+                (_, Some(pos)) => Some((
+                    pos,
+                    pos + plain_line.len(),
+                    ansi_offset,
+                    ansi_offset + line.len(),
+                    1,
+                )),
+                _ => None,
+            };
+            if let Some((start, end, astart, aend, n)) = run.filter(|r| r.4 >= 2) {
+                if n == 2 {
+                    spans.push((start, end, astart, aend));
+                } else if let Some(span) = spans.last_mut() {
+                    *span = (start, end, astart, aend);
+                }
+            }
+            ansi_offset += line.len();
+        }
+        spans.sort_unstable();
+    }
+    let mut output = String::new();
+    let mut cursor = 0;
+    for (start, end, astart, aend) in spans {
+        output.push_str(&text[cursor..start]);
+        output.push_str("\x1b[0m");
+        let span = &ansi[astart..aend];
+        output.push_str(span.trim_end_matches('\n'));
+        output.push_str("\x1b[0m");
+        output.push_str(&span[span.trim_end_matches('\n').len()..]);
+        cursor = end;
+    }
+    output.push_str(&text[cursor..]);
+    output
+}
 fn read_snapshot(pane: &str) -> Result<String> {
-    read_snapshot_lines(pane, snapshot_limit())
+    read_snapshot_lines(pane, snapshot_limit(), "ansi")
 }
 pub fn snapshot(pane: &str) -> Result<bool> {
     if pane.is_empty() || pane == "@section" {
@@ -207,6 +321,7 @@ struct SnapshotStream {
     height: usize,
     width: usize,
     emitted: usize,
+    terminal: Option<String>,
 }
 impl SnapshotStream {
     fn write(&mut self, text: &str, out: &mut impl Write) -> Result<()> {
@@ -243,7 +358,60 @@ impl SnapshotStream {
         self.previous = next;
         Ok(())
     }
+    fn paint_queued(&mut self, pane: &str, history: &Path) -> Result<()> {
+        let path = history.with_extension("history.frame");
+        if !path.exists() {
+            return Ok(());
+        }
+        let Some(_guard) = lock(&history.with_extension("viewport-lock"), true)? else {
+            return Ok(());
+        };
+        let Ok(data) = std::fs::read(&path) else {
+            return Ok(());
+        };
+        std::fs::remove_file(path)?;
+        let (owner, terminal, binding, body): (String, Option<String>, serde_json::Value, String) =
+            serde_json::from_slice(&data)?;
+        if history.exists()
+            && history.with_extension("history.expanded").exists()
+            && owner == pane
+            && terminal == self.terminal
+            && (binding.is_null() || crate::hermes_history::valid(pane, &binding))
+        {
+            std::io::stdout()
+                .lock()
+                .write_all(format!("\x1b[2J{body}\n").as_bytes())?;
+            std::io::stdout().flush()?;
+            self.restored = true;
+        }
+        Ok(())
+    }
     fn refresh(&mut self, pane: &str, history: &Path) -> Result<bool> {
+        if let Ok(data) = std::fs::read(history.with_extension("window")) {
+            if let Ok(window) = serde_json::from_slice::<serde_json::Value>(&data) {
+                if window["pane"].as_str() == Some(pane)
+                    && !window["semantic"].is_null()
+                    && !crate::hermes_history::valid(pane, &window["semantic"])
+                {
+                    let _guard = lock(&history.with_extension("viewport-lock"), false)?;
+                    for extension in [
+                        "history",
+                        "history.expanded",
+                        "history.resized",
+                        "history.frame",
+                        "window",
+                        "sources",
+                    ] {
+                        let _ = std::fs::remove_file(history.with_extension(extension));
+                    }
+                    std::io::stdout().write_all(b"\x1b[2J")?;
+                    self.previous.clear();
+                    self.buffer.clear();
+                    self.emitted = 0;
+                    self.restored = false;
+                }
+            }
+        }
         match read_snapshot(pane) {
             Ok(text) => {
                 // Serialize publication with the first scroll key, never with the slow pane read.
@@ -267,7 +435,7 @@ impl SnapshotStream {
                         atomic_write(
                             &history.with_extension("window"),
                             serde_json::to_string(&serde_json::json!({
-                                "pane": pane, "width": self.width, "limit": snapshot_limit(),
+                                "pane": pane, "terminal": self.terminal, "width": self.width, "limit": snapshot_limit(),
                                 "exhausted": false, "rows": self.buffer,
                             }))?
                             .as_bytes(),
@@ -461,17 +629,32 @@ fn live_inner(pane: &str, path: &Path, origin: &str) -> Result<()> {
         height: usize::from(lines),
         ..Default::default()
     };
+    if !origin.is_empty() && pane != origin {
+        let info = request(&["pane", "get", pane])?;
+        stream.terminal = Some(
+            info["pane"]["terminal_id"]
+                .as_str()
+                .ok_or("Terminal unavailable")?
+                .to_owned(),
+        );
+    }
     let history = path.with_extension("history");
     if history.exists() {
         if let Ok(data) = std::fs::read(history.with_extension("window")) {
             if let Ok(window) = serde_json::from_slice::<serde_json::Value>(&data) {
-                if window["pane"].as_str() == Some(pane) {
+                if window["pane"].as_str() == Some(pane)
+                    && window["terminal"].as_str() == stream.terminal.as_deref()
+                    && (window["semantic"].is_null()
+                        || crate::hermes_history::valid(pane, &window["semantic"]))
+                {
                     if let Ok(rows) = serde_json::from_value::<Vec<String>>(window["rows"].clone())
                     {
                         let mut out = std::io::stdout().lock();
                         // After resize fzf may retain an offset from the old grid. Publish
                         // the actual held viewport at offset zero instead of reusing it.
-                        let shown = if history.with_extension("history.resized").exists() {
+                        let shown = if history.with_extension("history.resized").exists()
+                            || history.with_extension("history.expanded").exists()
+                        {
                             let distance = std::fs::read_to_string(&history)?.parse::<usize>()?;
                             let height = usize::from(lines);
                             let start = rows.len().saturating_sub(height).saturating_sub(distance);
@@ -506,17 +689,79 @@ fn live_inner(pane: &str, path: &Path, origin: &str) -> Result<()> {
             }
             let end = Instant::now() + Duration::from_secs(1);
             while Instant::now() < end && !stopped() {
+                stream.paint_queued(pane, &history)?;
                 input.update(pane, None, None)?;
                 std::thread::sleep(Duration::from_millis(25));
             }
         }
         return Ok(());
     }
-    let info = request(&["pane", "get", pane])?;
-    let terminal = info["pane"]["terminal_id"]
-        .as_str()
-        .ok_or("Terminal unavailable")?;
-    let mut attached = attach(terminal, &lock, columns, lines)?;
+    let terminal = stream
+        .terminal
+        .as_deref()
+        .ok_or("Terminal unavailable")?
+        .to_owned();
+    let cache = history.with_extension("sources");
+    let mut sources: Vec<serde_json::Value> = std::fs::read(&cache)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default();
+    if !sources.iter().any(|source| {
+        source["pane"].as_str() == Some(pane)
+            && source["terminal"].as_str() == Some(&terminal)
+            && (source["binding"].is_null()
+                || crate::hermes_history::valid(pane, &source["binding"]))
+    }) {
+        let binding = crate::hermes_history::binding(pane);
+        let mut limit = 2048u16;
+        if let Some(mut text) = read_snapshot_lines(pane, limit, "text")
+            .ok()
+            .filter(|text| !text.is_empty())
+        {
+            // After attachment Herdr may only expose the visible rows.
+            while text.len() < 256 * 1024
+                && text.lines().count() >= usize::from(limit - 1)
+                && limit < u16::MAX
+            {
+                limit = limit.saturating_mul(2);
+                let Ok(wider) = read_snapshot_lines(pane, limit, "text") else {
+                    break;
+                };
+                if !wider.ends_with(&text) || wider.len() == text.len() {
+                    break;
+                }
+                text = wider;
+            }
+            let mut start = text.len().saturating_sub(256 * 1024);
+            while !text.is_char_boundary(start) {
+                start += 1;
+            }
+            if start > 0 {
+                start += text[start..]
+                    .find('\n')
+                    .map_or(text.len() - start, |n| n + 1);
+            }
+            let text = &text[start..];
+            let styled = read_snapshot_lines(pane, limit, "ansi")
+                .map(|ansi| styled_history(text, &ansi))
+                .ok()
+                .filter(|styled| styled.len() <= 256 * 1024)
+                .unwrap_or_else(|| text.to_owned());
+            sources.retain(|source| source["pane"].as_str() != Some(pane));
+            if binding
+                .as_ref()
+                .is_some_and(|b| !crate::hermes_history::valid(pane, b))
+            {
+                return Ok(());
+            }
+            sources.push(serde_json::json!({"pane": pane, "terminal": terminal, "text": styled, "binding": binding}));
+            if sources.len() > 4 {
+                sources.drain(..sources.len() - 4);
+            }
+            let _ = atomic_write(&cache, serde_json::to_string(&sources)?.as_bytes());
+        }
+    }
+    let mut attached = attach(&terminal, &lock, columns, lines)?;
     let mut data = Vec::new();
     let end = Instant::now() + Duration::from_secs(3);
     let mut bytes = [0; 65536];
@@ -543,7 +788,8 @@ fn live_inner(pane: &str, path: &Path, origin: &str) -> Result<()> {
         if attached.child.try_wait()?.is_some() {
             return Err("Terminal attachment ended".into());
         }
-        input.update(pane, Some(terminal), Some(&mut attached.master))?;
+        stream.paint_queued(pane, &history)?;
+        input.update(pane, Some(&terminal), Some(&mut attached.master))?;
         if Instant::now() >= refresh {
             if !stream.refresh(pane, &history)? {
                 return Err("Preview read failed; input stopped".into());
@@ -586,6 +832,69 @@ pub fn live(pane: &str, path: &Path, origin: &str) {
 mod tests {
     use super::*;
     #[test]
+    fn pages_disconnected_banner_and_body_in_their_original_colors() {
+        let text =
+            "NORTON COMMANDER\nAUTOEXEC.BAT\nold-status\nanswer one\nanswer two\nanswer three\n";
+        let ansi = "\x1b[36mNORTON COMMANDER\x1b[0m\n\x1b[33mAUTOEXEC.BAT\x1b[0m\nnew-status\n\x1b[32manswer one\x1b[0m\nanswer two\nanswer three\n";
+        let merged = styled_history(text, ansi);
+        assert_eq!(public_text(&merged), text);
+        for marker in [
+            "\x1b[36mNORTON COMMANDER",
+            "\x1b[33mAUTOEXEC.BAT",
+            "\x1b[32manswer one",
+        ] {
+            assert!(merged.contains(marker), "missing {marker:?}");
+        }
+    }
+    #[test]
+    fn styled_history_only_uses_a_unique_whole_line_match() {
+        let text = "older\n한글 red\ngreen\nnewer\n";
+        let ansi = "\x1b[31m한글 red\x1b[0m\n\x1b[32mgreen\x1b[0m\n";
+        let merged = styled_history(text, ansi);
+        assert!(merged.contains("\x1b[31m한글 red"));
+        assert!(merged.contains("\x1b[32mgreen"));
+        assert_eq!(
+            Regex::new(r"\x1b\[[0-9;:]*m")
+                .unwrap()
+                .replace_all(&merged, ""),
+            text
+        );
+        assert_eq!(
+            styled_history("한글 red\ngreen\n한글 red\ngreen\n", ansi),
+            "한글 red\ngreen\n한글 red\ngreen\n"
+        );
+        assert_eq!(
+            styled_history("prefix 한글 red\ngreen\n", ansi),
+            "prefix 한글 red\ngreen\n"
+        );
+        assert_eq!(styled_history("other\n", ansi), "other\n");
+        let partial = styled_history(text, &format!("header\n{ansi}footer\n"));
+        assert!(partial.contains("\x1b[31m한글 red"));
+        assert!(partial.contains("\x1b[32mgreen"));
+        assert_eq!(
+            Regex::new(r"\x1b\[[0-9;:]*m")
+                .unwrap()
+                .replace_all(&partial, ""),
+            text
+        );
+        let repetitive = "same\n".repeat(20_000);
+        assert_eq!(
+            styled_history(&repetitive, "header\n\x1b[31msame\x1b[0m\nsame\nfooter\n"),
+            repetitive
+        );
+        let sanitized = styled_history("red\n", "\x1b]52;c;secret\x07\x1b[31mred\x1b[0m\n");
+        assert!(!sanitized.contains("secret"));
+        assert!(sanitized.contains("\x1b[31mred"));
+    }
+    #[test]
+    fn styled_history_keeps_color_across_wrapped_rows() {
+        let text = "older\nabcdefgh\nnewer\n";
+        let merged = styled_history(text, "\x1b[31mabcdefgh\x1b[0m\n");
+        let rows = visual_rows(&merged, 4);
+        let joined = rows.join("\n");
+        assert!(joined.contains("\x1b[31mabcd\nefgh\x1b[0m"));
+    }
+    #[test]
     fn snapshot_escape_allowlist_confines_output() {
         assert_eq!(
             sanitize("한글\x1b[2J\x1b[1;1Htext\x1b[?1049h\x1b]52;c;secret\x07\x1bPpayload\x1b\\\x1b^payload\x1b\\\x1b[38;2;1;2;3m色\x1b[0m\n\t\r\x00\x08\u{009b}"),
@@ -622,6 +931,23 @@ mod tests {
         out.clear();
         stream.write("", &mut out).unwrap();
         assert_eq!(out, b"\x1b[2J\n");
+    }
+    #[test]
+    fn cropped_hermes_grid_matches_history_before_wrapping() {
+        let text = "HX099 peach
+HX100 tray
+";
+        let crop = "\x1b[32mHX099 peach       │\x1b[0m
+HX100 tray        │
+";
+        let rows = visual_rows(&clean(crop), 12);
+        let sgr = Regex::new(r"\x1b\[[0-9;:]*m").unwrap();
+        assert_eq!(sgr.replace_all(&rows.join("\n"), ""), text.trim_end());
+        assert!(rows[0].contains("\x1b[32m"));
+        let table = "│ left        │
+│ right       │
+standalone        ┃";
+        assert_eq!(clean(table), table);
     }
     #[test]
     fn padding_and_styles() {

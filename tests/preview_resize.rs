@@ -61,7 +61,8 @@ fn assert_preview_arguments(fixture: &Fixture) {
             Some(("pane", "read")) => {
                 assert_eq!(call[3..6], ["--source", "recent-unwrapped", "--lines"]);
                 assert!(call[6].parse::<u16>().unwrap() >= 30, "{call:?}");
-                assert_eq!(call[7..], ["--format", "ansi"]);
+                assert_eq!(call[7], "--format");
+                assert!(matches!(call[8].as_str(), "ansi" | "text"), "{call:?}");
             }
             _ => {}
         }
@@ -339,6 +340,140 @@ fn older_history_on_demand() {
     wait_screen(&fixture, &mut picker, &mut screen, |rows| {
         rows.last().is_some_and(|row| row == "ROW_99")
     });
+    picker.send(b"q");
+    assert!(picker.finish().success());
+}
+
+#[test]
+fn codex_traverses_text_history_beyond_ansi_viewport() {
+    let mut fixture = setup("codex-text-history");
+    fixture.env("CONTENT", fixture.path("ansi"));
+    fixture.env("TEXT_CONTENT", fixture.path("text"));
+    let mut codex = agent("p1", "Codex", true);
+    codex["agent"] = json!("codex");
+    fixture.write_json(
+        "snapshot.json",
+        &json!({"focused_pane_id":"p1", "panes":[{"pane_id":"p1"}],
+                "agents":[codex], "workspaces":[], "tabs":[]}),
+    );
+    let publish = |last| {
+        let text: String = (1..=last).map(|n| format!("CX{n:03}\n")).collect();
+        let ansi: String = (69..=last)
+            .map(|n| format!("\x1b[32mCX{n:03}\x1b[0m\n"))
+            .collect();
+        fixture.write("text", &text);
+        fixture.write(
+            "ansi",
+            &format!("Codex header CX001 (truncated)\n{ansi}Codex footer\n"),
+        );
+    };
+    publish(120);
+    for format in ["text", "ansi"] {
+        let mut command = fixture.configure(std::process::Command::new(fixture.path("herdr")));
+        command.args([
+            "pane",
+            "read",
+            "p1",
+            "--source",
+            "recent-unwrapped",
+            "--lines",
+            "600",
+            "--format",
+            format,
+        ]);
+        let output = common::output(command, WAIT);
+        assert!(output.status.success());
+        let output = String::from_utf8(output.stdout).unwrap();
+        if format == "text" {
+            assert_eq!(
+                output,
+                (1..=120).map(|n| format!("CX{n:03}\n")).collect::<String>()
+            );
+        } else {
+            assert!(output.starts_with("Codex header CX001 (truncated)\n\x1b[32mCX069\x1b[0m\n"));
+            assert!(output.ends_with("\x1b[32mCX120\x1b[0m\nCodex footer\n"));
+            assert!(!output.contains("CX068"));
+        }
+    }
+    let mut picker = fixture.spawn(&["picker"], 18, 100);
+    let mut screen = Screen::new(18, 100);
+    let markers = |screen: &Screen| -> Vec<usize> {
+        screen
+            .frame
+            .iter()
+            .filter_map(|row| {
+                let text: String = row[43..97].iter().collect();
+                let text = text.split_whitespace().next()?;
+                (text.len() == 5 && text.starts_with("CX"))
+                    .then(|| text[2..].parse().ok())
+                    .flatten()
+            })
+            .collect()
+    };
+    let deadline = Instant::now() + WAIT;
+    while !markers(&screen).contains(&120) {
+        screen.pump(&mut picker);
+        assert!(
+            Instant::now() < deadline,
+            "initial preview did not reach CX120: {:?}, calls {:?}",
+            screen
+                .frame
+                .iter()
+                .map(|row| row[43..97].iter().collect::<String>())
+                .collect::<Vec<_>>(),
+            fixture.calls()
+        );
+    }
+    let mut previous = markers(&screen);
+    let mut seen = std::collections::BTreeSet::new();
+    loop {
+        assert!(
+            previous.windows(2).all(|w| w[1] == w[0] + 1),
+            "nonconsecutive markers: {previous:?}"
+        );
+        seen.extend(previous.iter().copied());
+        if previous[0] == 1 {
+            break;
+        }
+        picker.send(b"U");
+        let deadline = Instant::now() + WAIT;
+        loop {
+            screen.pump(&mut picker);
+            let current = markers(&screen);
+            if current.first().is_some_and(|first| *first < previous[0]) {
+                assert!(
+                    current.iter().any(|n| previous.contains(n)),
+                    "skipped between {previous:?} and {current:?}"
+                );
+                previous = current;
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "stuck after {previous:?}, got {current:?}, calls {:?}",
+                fixture.calls()
+            );
+        }
+    }
+    assert_eq!(
+        seen.into_iter().collect::<Vec<_>>(),
+        (1..=120).collect::<Vec<_>>()
+    );
+    picker.send(b"\x1b[F");
+    let deadline = Instant::now() + WAIT;
+    while !markers(&screen).contains(&120) {
+        screen.pump(&mut picker);
+        assert!(Instant::now() < deadline, "failed to return to live tail");
+    }
+    publish(121);
+    let deadline = Instant::now() + WAIT;
+    while !markers(&screen).contains(&121) {
+        screen.pump(&mut picker);
+        assert!(
+            Instant::now() < deadline,
+            "live preview did not follow CX121"
+        );
+    }
     picker.send(b"q");
     assert!(picker.finish().success());
 }
@@ -640,6 +775,24 @@ fn lifecycle(scenario: &str) {
 
     if scenario == "attach-failure" {
         picker.wait_for(b"Preview unavailable");
+        assert_eq!(
+            fixture
+                .events()
+                .iter()
+                .filter(|line| *line == "history-read p1")
+                .count(),
+            1
+        );
+        let log = fixture.events();
+        let styled = log
+            .iter()
+            .position(|line| line == "styled-history-read p1")
+            .unwrap();
+        let attach = log
+            .iter()
+            .position(|line| line.starts_with("attach p1 "))
+            .unwrap();
+        assert!(styled < attach, "{log:?}");
         assert!(!fixture
             .events()
             .iter()
@@ -659,7 +812,18 @@ fn lifecycle(scenario: &str) {
         .iter()
         .position(|line| line.starts_with("attach p1 "))
         .unwrap();
-    assert!(read > attach, "{log:?}");
+    let history = log
+        .iter()
+        .position(|line| line == "history-read p1")
+        .unwrap();
+    assert!(history < attach && attach < read, "{log:?}");
+    if scenario != "read-failure" {
+        let styled = log
+            .iter()
+            .position(|line| line == "styled-history-read p1")
+            .unwrap();
+        assert!(history < styled && styled < attach, "{log:?}");
+    }
 
     match scenario {
         "read-failure" => {
@@ -948,4 +1112,174 @@ fn popup_only() {
 #[test]
 fn origin_read_failure() {
     picker_origin("origin-read-failure");
+}
+
+#[test]
+fn cross_tab_history_survives_attach_and_returns_to_selected_tail() {
+    let mut fixture = setup("cross-tab-history");
+    fixture.env("CROSS_TAB_CONTENT", fixture.path("cross-tab"));
+    let mut b = agent("p2", "Agent B", false);
+    b["tab_id"] = json!("t2");
+    fixture.write_json(
+        "snapshot.json",
+        &json!({
+            "focused_pane_id":"p1", "panes":[{"pane_id":"p1"},{"pane_id":"p2"}],
+            "agents":[agent("p1", "Agent A", true), b],
+            "workspaces":[{"workspace_id":"w1", "label":"Workspace"}],
+            "tabs":[{"tab_id":"t1", "label":"Tab A"},{"tab_id":"t2", "label":"Tab B"}]
+        }),
+    );
+    fixture.write("cross-tab/p1", "A_ONLY\n");
+    let publish = |last| {
+        fixture.write(
+            "cross-tab/p2",
+            &(1..=last).map(|n| format!("B{n:03}\n")).collect::<String>(),
+        )
+    };
+    const LAST: usize = 2080;
+    publish(LAST);
+    let direct_read = |format| {
+        let mut command = fixture.configure(std::process::Command::new(fixture.path("herdr")));
+        command.args([
+            "pane",
+            "read",
+            "p2",
+            "--source",
+            "recent-unwrapped",
+            "--lines",
+            "3000",
+            "--format",
+            format,
+        ]);
+        let output = common::output(command, WAIT);
+        assert!(output.status.success());
+        common::plain(&String::from_utf8(output.stdout).unwrap())
+    };
+    let full = (1..=LAST).map(|n| format!("B{n:03}\n")).collect::<String>();
+    for format in ["text", "ansi"] {
+        assert_eq!(direct_read(format), full);
+    }
+
+    let mut picker = fixture.spawn(&["picker"], 18, 100);
+    let mut screen = Screen::new(18, 100);
+    let rows = |screen: &Screen| -> Vec<String> {
+        screen
+            .frame
+            .iter()
+            .map(|row| row[43..97].iter().collect::<String>().trim().to_owned())
+            .filter(|row| !row.is_empty())
+            .collect()
+    };
+    let markers = |screen: &Screen| -> Vec<usize> {
+        rows(screen)
+            .iter()
+            .filter_map(|row| {
+                row.split_whitespace()
+                    .next()?
+                    .strip_prefix('B')?
+                    .parse()
+                    .ok()
+            })
+            .collect()
+    };
+    let deadline = Instant::now() + WAIT;
+    while !rows(&screen).iter().any(|row| row.contains("A_ONLY")) {
+        screen.pump(&mut picker);
+        assert!(
+            Instant::now() < deadline,
+            "A not displayed: {:?}, {:?}",
+            rows(&screen),
+            fixture.events()
+        );
+    }
+    picker.send(b"j");
+    picker.wait_until(|| !attachments(&fixture, "p2").is_empty(), WAIT);
+    for format in ["text", "ansi"] {
+        assert_eq!(
+            direct_read(format),
+            (LAST - 36..=LAST)
+                .map(|n| format!("B{n:03}\n"))
+                .collect::<String>()
+        );
+    }
+    let deadline = Instant::now() + WAIT;
+    while !markers(&screen).contains(&LAST) {
+        screen.pump(&mut picker);
+        assert!(
+            Instant::now() < deadline,
+            "B tail missing: {:?}, {:?}",
+            rows(&screen),
+            fixture.events()
+        );
+    }
+    let mut previous = markers(&screen);
+    let mut seen = std::collections::BTreeSet::new();
+    loop {
+        assert!(
+            !rows(&screen).iter().any(|row| row.contains("A_ONLY")),
+            "A spliced into B: {:?}",
+            rows(&screen)
+        );
+        assert!(
+            previous.windows(2).all(|w| w[1] == w[0] + 1),
+            "nonconsecutive B rows: {previous:?}"
+        );
+        seen.extend(previous.iter().copied());
+        if previous[0] == 1 {
+            break;
+        }
+        picker.send(if previous[0] <= 40 { b"K" } else { b"U" });
+        let deadline = Instant::now() + WAIT;
+        loop {
+            screen.pump(&mut picker);
+            let current = markers(&screen);
+            if current.first().is_some_and(|first| *first < previous[0]) {
+                assert!(
+                    current.iter().any(|n| previous.contains(n)),
+                    "skipped {previous:?} to {current:?}"
+                );
+                previous = current;
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "stuck before B001: {previous:?}, now {:?}",
+                rows(&screen)
+            );
+        }
+    }
+    assert_eq!(
+        seen.into_iter().collect::<Vec<_>>(),
+        (1..=LAST).collect::<Vec<_>>()
+    );
+    let held = markers(&screen);
+    publish(LAST + 1);
+    let end = Instant::now() + Duration::from_millis(2300);
+    while Instant::now() < end {
+        screen.pump(&mut picker);
+        assert_eq!(markers(&screen), held, "B history moved while held");
+    }
+    picker.send(b"\x1b[F");
+    let deadline = Instant::now() + WAIT;
+    while !markers(&screen).contains(&(LAST + 1)) {
+        screen.pump(&mut picker);
+        assert!(
+            Instant::now() < deadline,
+            "End did not show new row: {:?}",
+            rows(&screen)
+        );
+    }
+    publish(LAST + 2);
+    let deadline = Instant::now() + WAIT;
+    while !markers(&screen).contains(&(LAST + 2)) {
+        screen.pump(&mut picker);
+        assert!(
+            Instant::now() < deadline,
+            "live follow did not show next row: {:?}",
+            rows(&screen)
+        );
+    }
+    picker.send(b"\r");
+    assert!(picker.finish().success());
+    assert_eq!(fixture.focus().as_deref(), Some("p2"));
 }

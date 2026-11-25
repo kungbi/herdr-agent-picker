@@ -10,7 +10,7 @@ use std::{
     time::Duration,
 };
 const COMMON:&str="LICENSE README.md CHANGELOG.md herdr-plugin.toml run docs/rust-port-validation.md docs/scenario-parity.md docs/parity-picker.md docs/parity-preview.md docs/parity-dialogs.md docs/images/agent-picker-demo.png docs/images/agent-picker-demo.svg docs/images/agent-picker-preview.png docs/images/agent-picker-alarm.png";
-const SOURCE:&str="Cargo.toml Cargo.lock scripts/build_package.py tests/common/mod.rs tests/support/fake_herdr.rs tests/runtime.rs tests/picker.rs tests/live_picker.rs tests/interactive.rs tests/conversation_picker.rs tests/preview_resize.rs tests/reminder_picker.rs tests/package.rs src/main.rs src/config.rs src/util.rs src/completion.rs src/picker.rs src/preview.rs src/reminders.rs src/dialog.rs src/interaction.rs src/sqlite.rs .github/workflows/preview.yml";
+const SOURCE:&str="Cargo.toml Cargo.lock scripts/build_package.py tests/common/mod.rs tests/support/fake_herdr.rs tests/runtime.rs tests/picker.rs tests/live_picker.rs tests/interactive.rs tests/conversation_picker.rs tests/preview_resize.rs tests/hermes_history.rs tests/history_color.rs integrations/hermes-work-tui-binding.patch src/hermes_history.rs src/hermes_binding.rs tests/reminder_picker.rs tests/package.rs src/main.rs src/config.rs src/util.rs src/completion.rs src/picker.rs src/preview.rs src/reminders.rs src/dialog.rs src/interaction.rs src/sqlite.rs .github/workflows/preview.yml";
 fn checked(c: Command) -> Output {
     let o = output(c, Duration::from_secs(60));
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));

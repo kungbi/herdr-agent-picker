@@ -17,9 +17,21 @@ struct Stmt {
 #[link(name = "sqlite3")]
 extern "C" {
     fn sqlite3_open(filename: *const c_char, db: *mut *mut Sqlite) -> c_int;
+    fn sqlite3_open_v2(
+        filename: *const c_char,
+        db: *mut *mut Sqlite,
+        flags: c_int,
+        vfs: *const c_char,
+    ) -> c_int;
     fn sqlite3_close(db: *mut Sqlite) -> c_int;
     fn sqlite3_errmsg(db: *mut Sqlite) -> *const c_char;
     fn sqlite3_busy_timeout(db: *mut Sqlite, ms: c_int) -> c_int;
+    fn sqlite3_progress_handler(
+        db: *mut Sqlite,
+        n: c_int,
+        callback: Option<unsafe extern "C" fn(*mut c_void) -> c_int>,
+        context: *mut c_void,
+    );
     fn sqlite3_prepare_v2(
         db: *mut Sqlite,
         sql: *const c_char,
@@ -63,6 +75,18 @@ impl Drop for Database {
     }
 }
 impl Database {
+    pub fn open_readonly(path: &Path) -> Result<Self> {
+        let path = CString::new(path.as_os_str().as_encoded_bytes())?;
+        let mut raw = ptr::null_mut();
+        let code = unsafe { sqlite3_open_v2(path.as_ptr(), &mut raw, 1, ptr::null()) };
+        if raw.is_null() {
+            return Err("Could not open history database".into());
+        }
+        let db = Self(raw);
+        db.check(code)?;
+        db.check(unsafe { sqlite3_busy_timeout(raw, 100) })?;
+        Ok(db)
+    }
     pub fn open(path: &Path) -> Result<Self> {
         let path = CString::new(path.as_os_str().as_encoded_bytes())?;
         let mut raw = ptr::null_mut();
@@ -155,6 +179,23 @@ impl Database {
             rows.push(Value::Object(row));
         }
         Ok(rows)
+    }
+    pub fn query_bounded(&self, sql: &str, args: &[Value]) -> Result<Vec<Value>> {
+        unsafe extern "C" fn expired(context: *mut c_void) -> c_int {
+            (std::time::Instant::now() >= *(context as *const std::time::Instant)) as c_int
+        }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(200);
+        unsafe {
+            sqlite3_progress_handler(
+                self.0,
+                1000,
+                Some(expired),
+                &deadline as *const _ as *mut c_void,
+            )
+        };
+        let result = self.query(sql, args);
+        unsafe { sqlite3_progress_handler(self.0, 0, None, ptr::null_mut()) };
+        result
     }
     pub fn execute(&self, sql: &str, args: &[Value]) -> Result<usize> {
         self.query(sql, args)?;

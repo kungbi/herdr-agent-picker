@@ -1,6 +1,8 @@
 mod completion;
 mod config;
 mod dialog;
+mod hermes_binding;
+mod hermes_history;
 mod interaction;
 mod picker;
 mod preview;
