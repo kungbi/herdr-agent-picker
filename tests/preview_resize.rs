@@ -115,6 +115,31 @@ fn wait_screen(
     );
 }
 
+fn resize_and_wait(
+    fixture: &Fixture,
+    picker: &mut Pty,
+    screen: &mut Screen,
+    cols: u16,
+    expected: &[String],
+) {
+    picker.resize(48, cols);
+    let cols = usize::from(cols);
+    screen.resize(48, cols);
+    let deadline = Instant::now() + WAIT;
+    loop {
+        screen.pump(picker);
+        if screen.frame[0][cols - 1] == '╮' && screen.preview() == expected {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "preview {:?}, Herdr events {:?}",
+            screen.preview(),
+            fixture.events()
+        );
+    }
+}
+
 fn assert_stable(
     fixture: &Fixture,
     picker: &mut Pty,
@@ -677,22 +702,7 @@ fn tall_preview_fills_with_recent_history() {
     wait_screen(&fixture, &mut picker, &mut screen, |rows| {
         rows == before_resize
     });
-    picker.resize(48, 101);
-    screen.resize(48, 101);
-    let deadline = Instant::now() + WAIT;
-    loop {
-        screen.pump(&mut picker);
-        // The new right border distinguishes a resized frame from the old one.
-        if screen.frame[0][100] == '╮' && screen.preview() == before_resize {
-            break;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "preview {:?}, Herdr events {:?}",
-            screen.preview(),
-            fixture.events()
-        );
-    }
+    resize_and_wait(&fixture, &mut picker, &mut screen, 101, &before_resize);
     assert_stable(&fixture, &mut picker, &mut screen, &before_resize, 2);
     picker.send(b"\x1b[F");
     let deadline = Instant::now() + WAIT;
@@ -742,14 +752,14 @@ fn held_preview_survives_resize_at_top_and_near_bottom() {
         rows.last().is_some_and(|row| row == "ROW_79")
     });
     let near_bottom = screen.preview();
-    picker.resize(48, 101);
+    resize_and_wait(&fixture, &mut picker, &mut screen, 101, &near_bottom);
     assert_stable(&fixture, &mut picker, &mut screen, &near_bottom, 2);
     picker.send(b"UUUUUU");
     wait_screen(&fixture, &mut picker, &mut screen, |rows| {
         rows.first().is_some_and(|row| row == "ROW_01")
     });
     let top = screen.preview();
-    picker.resize(48, 100);
+    resize_and_wait(&fixture, &mut picker, &mut screen, 100, &top);
     assert_stable(&fixture, &mut picker, &mut screen, &top, 2);
     picker.send(b"q");
     assert!(picker.finish().success());

@@ -339,8 +339,8 @@ impl SnapshotStream {
                     && next[..n].iter().any(|line| !line.trim().is_empty())
             })
             .unwrap_or(0);
-        if overlap == 0 && self.emitted > 0 {
-            // A working agent may repaint old rows. Replace the live buffer, not its history twice.
+        if overlap == 0 {
+            // A slow first read can leave fzf at the loading frame's offset. Reset it just like a repaint.
             out.write_all(b"\x1b[2J")?;
             self.emitted = 0;
             self.buffer.clear();
@@ -914,7 +914,7 @@ mod tests {
         };
         let mut out = Vec::new();
         stream.write("\x1b[32mA\x1b[0m\nB\n", &mut out).unwrap();
-        assert_eq!(out, b"\x1b[32mA\x1b[0m\nB\n");
+        assert_eq!(out, b"\x1b[2J\x1b[32mA\x1b[0m\nB\n");
         out.clear();
         for _ in 0..3 {
             stream.write("\x1b[32mA\x1b[0m\nB\n", &mut out).unwrap();

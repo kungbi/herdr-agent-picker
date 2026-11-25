@@ -302,6 +302,10 @@ fn main() {
                 let path = Path::new(&file("DATA")).with_file_name("received");
                 let received = fs::read(path).unwrap_or_default();
                 if d["long_preview"] == true {
+                    if event == "read" && received.is_empty() {
+                        // Let fzf paint its loading indicator before the first live frame.
+                        std::thread::sleep(std::time::Duration::from_millis(750));
+                    }
                     for i in 0..30 {
                         println!("PREVIOUS_ROW_{i:02}");
                     }
