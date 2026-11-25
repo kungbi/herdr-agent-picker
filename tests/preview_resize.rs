@@ -465,7 +465,8 @@ fn codex_traverses_text_history_beyond_ansi_viewport() {
         loop {
             screen.pump(&mut picker);
             let current = markers(&screen);
-            if current.first().is_some_and(|first| *first < previous[0]) {
+            // A half-page move can paint just its first rows before the rest arrive.
+            if current.len() == 14 && current[0] < previous[0] {
                 assert!(
                     current.iter().any(|n| previous.contains(n)),
                     "skipped between {previous:?} and {current:?}"
