@@ -108,6 +108,11 @@ fn main() {
                 json!({"agent":{"agent":env::var("PICKER_AGENT_KIND").unwrap_or_else(|_| if mode == "reminder" { "demo".into() } else { "claude".into() })}})
             }
         }
+        ["pane", "process-info"] if mode == "resize" => {
+            assert_eq!(args.len(), 4);
+            assert_eq!(args[2], "--pane");
+            json!({"process_info":{"pane_id":args[3], "foreground_processes":[]}})
+        }
         ["pane", "process-info"] if mode == "interactive" => {
             assert_eq!(args.len(), 4);
             assert_eq!(args[2], "--pane");
