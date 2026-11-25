@@ -59,7 +59,7 @@ fn scenario(case: &str) {
             press(&mut p, b"/");
             press(&mut p, b"NeverMatch-iJKudUD");
             p.wait_for(b"NeverMatch-iJKudUD");
-            assert_eq!(calls(&f, ["pane", "process-info"]), 0);
+            assert!(received(&f).is_empty(), "search query leaked to the agent");
             p.clear();
             p.send(b"\x1b");
             p.wait_for(b"Task 1");
