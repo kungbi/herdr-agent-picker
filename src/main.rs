@@ -69,6 +69,7 @@ fn run() -> Result<()> {
             Ok(())
         }
         "--scroll" => picker::scroll(Path::new(arg(1)?), arg(2)?.parse()?, arg(3)?),
+        "--focus-preview" => picker::focus_preview(Path::new(arg(1)?), arg(2)?),
         "--refresh" => {
             print!("{}", picker::refresh_action(Path::new(arg(1)?))?);
             Ok(())

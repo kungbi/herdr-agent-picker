@@ -538,6 +538,36 @@ pub fn scroll(path: &Path, step: i32, pane: &str) -> Result<()> {
     Ok(())
 }
 
+pub fn focus_preview(path: &Path, pane: &str) -> Result<()> {
+    let _guard = lock(&path.with_extension("viewport-lock"), false)?;
+    let history = path.with_extension("history");
+    if history.exists()
+        && fs::read(path.with_extension("window"))
+            .ok()
+            .and_then(|data| serde_json::from_slice::<Value>(&data).ok())
+            .is_some_and(|window| window["pane"].as_str() == Some(pane))
+    {
+        return Ok(());
+    }
+    let expanded = path.with_extension("history.expanded").exists();
+    let resized = path.with_extension("history.resized").exists();
+    for file in [
+        history,
+        path.with_extension("history.expanded"),
+        path.with_extension("history.resized"),
+    ] {
+        match fs::remove_file(file) {
+            Ok(()) => (),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
+            Err(e) => return Err(e.into()),
+        }
+    }
+    if expanded || resized {
+        print!("change-preview-window(default:right:60%:nowrap:follow:+0)");
+    }
+    Ok(())
+}
+
 pub fn refresh_action(path: &Path) -> Result<String> {
     let paused =
         || path.with_extension("active").exists() || path.with_extension("history").exists();
@@ -610,7 +640,8 @@ pub fn main() -> Result<()> {
         "--bind=end:transform:rm -f {history}; if [ -f {history}.expanded ]; then rm -f {history}.expanded {history}.resized; printf '%s' 'change-preview-window(default:right:60%:nowrap:follow:+0)+refresh-preview'; elif [ -f {history}.resized ]; then rm -f {history}.resized; printf '%s' 'change-preview-window(default:right:60%:nowrap:follow:+0)+refresh-preview+preview-bottom'; else printf preview-bottom; fi"
     ));
     args.push(format!(
-        "--bind=focus:transform:if [ -f {history}.expanded ] || [ -f {history}.resized ]; then rm -f {history} {history}.expanded {history}.resized; printf '%s' 'change-preview-window(default:right:60%:nowrap:follow:+0)'; else rm -f {history} {history}.resized; fi"
+        "--bind=focus:transform:{} {{1}}",
+        shell(&[&exe, "--focus-preview", &cache.to_string_lossy()])
     ));
     for n in 1..=9 {
         args.push(format!("--bind={n}:transform:if [ \"$FZF_MATCH_COUNT\" -ge {n} ]; then printf '%s' 'pos(1){}+accept'; fi","+down-match".repeat(n)));

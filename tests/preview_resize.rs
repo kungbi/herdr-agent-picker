@@ -732,6 +732,80 @@ fn tall_preview_fills_with_recent_history() {
 }
 
 #[test]
+fn list_reload_preserves_held_preview() {
+    use std::os::unix::fs::PermissionsExt;
+    let mut fixture = setup("held-reload");
+    fixture.env("CONTENT", fixture.path("content"));
+    let bin = fixture.path("bin");
+    std::fs::create_dir(&bin).unwrap();
+    let fzf = bin.join("fzf");
+    let real_fzf = std::process::Command::new("which")
+        .arg("fzf")
+        .output()
+        .unwrap();
+    let real_fzf = String::from_utf8(real_fzf.stdout).unwrap();
+    fixture.write(
+        "bin/fzf",
+        &format!(
+            "#!/bin/sh\ntee {} | {} \"$@\" {}\n",
+            common::quote(fixture.path("list").to_str().unwrap()),
+            common::quote(real_fzf.trim()),
+            common::quote(&format!(
+                "--bind=ctrl-x:reload-sync:cat {}",
+                common::quote(fixture.path("list").to_str().unwrap())
+            )),
+        ),
+    );
+    std::fs::set_permissions(fzf, std::fs::Permissions::from_mode(0o700)).unwrap();
+    fixture.env(
+        "PATH",
+        format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
+    );
+    fixture.write_json("snapshot.json", &json!({
+        "focused_pane_id": "p1", "panes": [{"pane_id": "p1"}, {"pane_id": "p2"}],
+        "agents": [agent("p1", "Agent", true), agent("p2", "Other", false)], "workspaces": [], "tabs": []
+    }));
+    publish_rows(&fixture, 1, 94, "_EDIT");
+    let mut picker = fixture.spawn(&["picker"], 48, 100);
+    let mut screen = Screen::new(48, 100);
+    wait_screen(&fixture, &mut picker, &mut screen, |rows| {
+        rows.last().is_some_and(|r| r == "ROW_94_EDIT")
+    });
+    picker.send(b"KK");
+    wait_screen(&fixture, &mut picker, &mut screen, |rows| {
+        rows.last().is_some_and(|r| r == "ROW_90_EDIT")
+    });
+    let held = screen.preview();
+    publish_rows(&fixture, 1, 95, "_EDIT");
+    picker.send(b"\x18");
+    assert_stable(&fixture, &mut picker, &mut screen, &held, 2);
+    resize_and_wait(&fixture, &mut picker, &mut screen, 101, &held);
+    picker.send(b"\x18");
+    assert_stable(&fixture, &mut picker, &mut screen, &held, 2);
+    picker.send(b"J");
+    wait_screen(&fixture, &mut picker, &mut screen, |rows| {
+        rows.last().is_some_and(|r| r == "ROW_92_EDIT")
+    });
+    picker.send(b"K");
+    wait_screen(&fixture, &mut picker, &mut screen, |rows| rows == held);
+    picker.send(b"\x1b[F");
+    wait_screen(&fixture, &mut picker, &mut screen, |rows| {
+        rows.last().is_some_and(|r| r == "ROW_95_EDIT")
+    });
+    picker.send(b"K");
+    wait_screen(&fixture, &mut picker, &mut screen, |rows| {
+        rows.last().is_some_and(|r| r == "ROW_93_EDIT")
+    });
+    picker.send(b"j");
+    common::until(|| reads(&fixture, "p2") > 0, WAIT);
+    wait_screen(&fixture, &mut picker, &mut screen, |rows| {
+        rows.last().is_some_and(|r| r == "ROW_95_EDIT")
+    });
+    picker.send(b"q");
+    assert!(picker.finish().success());
+}
+
+#[test]
 fn held_preview_survives_resize_at_top_and_near_bottom() {
     let mut fixture = setup("held-resize-edges");
     fixture.env("CONTENT", fixture.path("content"));
