@@ -66,6 +66,7 @@ fn run() -> Result<()> {
             print!("{}", picker::refresh_rows(Path::new(arg(1)?))?);
             Ok(())
         }
+        "--scroll" => picker::scroll(Path::new(arg(1)?), arg(2)?.parse()?, arg(3)?),
         "--refresh" => {
             print!("{}", picker::refresh_action(Path::new(arg(1)?))?);
             Ok(())

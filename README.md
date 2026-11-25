@@ -17,6 +17,7 @@ rendered from ANSI with a monospace font. All agents, tasks, paths and preview
 output are synthetic; no live Herdr sessions or notifications were used.
 
 - Colored status first, bold task title, dim workspace/tab location.
+- The preview starts at the bottom and follows new output. `Shift+U` / `Shift+D` move up / down half a screen; `Shift+K` / `Shift+J` move up / down two rendered rows. Scrolling up freezes the displayed history without changing the selected agent. Returning to the bottom with `Shift+J`, Shift+Down, or `Shift+D` resumes live follow; `End` also resumes it. Plain `u` and `d` do not scroll.
 - `j`/`k` or arrow keys to navigate; `Ctrl+D`/`Ctrl+U` to move five agents at a time.
   Enter to focus; Esc or `q` to close in normal mode.
 - Press `/` to search by task, workspace, tab, or agent name. Use arrow keys to

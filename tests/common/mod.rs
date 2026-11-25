@@ -678,6 +678,17 @@ impl Screen {
         }
     }
 
+    pub fn resize(&mut self, rows: usize, columns: usize) {
+        for grid in [&mut self.cells, &mut self.frame] {
+            grid.resize(rows, vec![' '; columns]);
+            for row in grid {
+                row.resize(columns, ' ');
+            }
+        }
+        self.cursor = (self.cursor.0.min(rows - 1), self.cursor.1.min(columns - 1));
+        self.saved = (self.saved.0.min(rows - 1), self.saved.1.min(columns - 1));
+    }
+
     pub fn feed(&mut self, data: &[u8]) {
         use unicode_width::UnicodeWidthChar;
         let mut bytes = std::mem::take(&mut self.pending);

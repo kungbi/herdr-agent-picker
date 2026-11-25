@@ -246,7 +246,10 @@ pub fn run(
     let mut normal_paste = false;
     let mut normal_tail = Vec::new();
     let mut normal_sequence = Vec::new();
+    let mut rune = Vec::with_capacity(4);
     let mut normal_escape = Instant::now();
+    let mut osc = false;
+    let mut osc_escape = false;
     let mut bytes = [0; 65536];
     let status = loop {
         if let Some(status) = child.0.try_wait()? {
@@ -275,6 +278,7 @@ pub fn run(
                 atomic_write(&marker, b"active")?;
                 match Connection::open(path, &pane) {
                     Ok(c) => {
+                        let _ = fs::remove_file(path.with_extension("history"));
                         connection = Some(c);
                         error = None;
                         keys = Keys::default();
@@ -334,12 +338,20 @@ pub fn run(
                 notice_refresh = Instant::now() + Duration::from_millis(100);
             }
         }
-        // shortcut: gaps over 40ms can split a key sequence; use framed input if available.
+        // shortcut: split after 40ms idle or 4096 bytes; use framed input if available.
+        if osc && events[0].revents == 0 && normal_escape.elapsed() >= Duration::from_millis(250) {
+            osc = false;
+        }
         if !normal_sequence.is_empty()
             && events[0].revents == 0
             && normal_escape.elapsed() >= Duration::from_millis(40)
         {
-            master.write_all(&normal_sequence)?;
+            // Only an isolated Escape should close the picker, not Escape decoded inside a terminal reply.
+            if normal_sequence == [27] && !normal_paste {
+                master.write_all(b"\x1d")?;
+            } else {
+                master.write_all(&normal_sequence)?;
+            }
             normal_sequence.clear();
         }
         if events[0].revents != 0 {
@@ -357,7 +369,38 @@ pub fn run(
                 // pasted ESC cannot return to fzf and leak the remaining bytes.
                 keys.forward(byte[0], &mut std::io::sink())?;
             } else {
+                // fzf must receive an IME character in one write, just like an arrow sequence.
+                if !rune.is_empty() {
+                    if byte[0] & 0xc0 == 0x80 {
+                        rune.push(byte[0]);
+                        if rune.len() == rune[0].leading_ones() as usize {
+                            master.write_all(&rune)?;
+                            rune.clear();
+                        }
+                        continue;
+                    }
+                    master.write_all(&rune)?;
+                    rune.clear();
+                }
+                if !osc && normal_sequence.is_empty() && (0xc2..=0xf4).contains(&byte[0]) {
+                    rune.push(byte[0]);
+                    continue;
+                }
                 let literal_i = byte[0] == b'i' && !normal_paste && normal_sequence.is_empty();
+                // Terminal color replies are not picker keys (their digits can select an agent).
+                if osc {
+                    osc = !(byte[0] == 7 || (osc_escape && byte[0] == b'\\'));
+                    osc_escape = byte[0] == 27;
+                    normal_escape = Instant::now();
+                    continue;
+                }
+                if !normal_paste && normal_sequence == [27] && byte[0] == b']' {
+                    normal_sequence.clear();
+                    osc = true;
+                    osc_escape = false;
+                    normal_escape = Instant::now();
+                    continue;
+                }
                 if byte[0] == 27 {
                     if !normal_sequence.is_empty() {
                         master.write_all(&normal_sequence)?;
