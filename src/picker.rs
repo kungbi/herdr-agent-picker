@@ -325,6 +325,10 @@ pub fn scroll(path: &Path, step: i32, pane: &str) -> Result<()> {
                     &path.with_extension("extent"),
                     format!("{} {}", expanded.len(), height).as_bytes(),
                 )?;
+                if path.with_extension("history.resized").exists() {
+                    println!("refresh-preview");
+                    return Ok(());
+                }
                 println!(
                     "change-preview-window(right:60%:nowrap:nofollow:+{})+refresh-preview",
                     target + 1
@@ -351,6 +355,10 @@ pub fn scroll(path: &Path, step: i32, pane: &str) -> Result<()> {
         println!("preview-bottom");
     } else {
         atomic_write(&history, next.to_string().as_bytes())?;
+        if path.with_extension("history.resized").exists() {
+            println!("refresh-preview");
+            return Ok(());
+        }
         let action = if next > old {
             "preview-up"
         } else {
@@ -416,7 +424,7 @@ pub fn main() -> Result<()> {
     let mut args=vec!["--ansi".into(),
         "--no-tty-default".into(),"--color=dark,fg+:-1".into(),"--sync".into(),"--no-input".into(),"--no-sort".into(),"--no-multi".into(),"--layout=reverse".into(),"--track".into(),"--id-nth=1".into(),"--raw".into(),"--query=!^──".into(),"--with-shell=/bin/sh -c".into(),"--delimiter=\t".into(),"--with-nth=2..".into(),"--border=rounded".into(),"--border-label= Agents ".into(),"--header=1-9/Enter: focus  J/K: down/up 2 lines  U/D: half page  Ctrl+D/U: jump  /: search  p: preview  i: interact  a/r: alarm  Esc: back/close  q: close".into(),format!("--preview={preview}"),"--preview-window=right:60%:nowrap:follow".into(),format!("--bind=/:show-input+clear-query+disable-raw+unbind({search})"),"--bind=p:toggle-preview,q:abort,ctrl-l:clear-screen+change-preview-label( Preview )".into(),format!("--bind=j:down-match,k:up-match,down:down-match,up:up-match,ctrl-j:down-match,ctrl-k:up-match,load:pos({selected})+unbind(load)"),format!("--bind=esc:ignore,ctrl-]:transform:if [ \"$FZF_INPUT_STATE\" = hidden ]; then printf abort; else printf '%s' 'change-query(!^──)+enable-raw+rebind({search})'; fi"),"--bind=ctrl-]:+hide-input".into(),"--bind=enter:transform:if [ -n {1} ] && [ {1} != '@section' ]; then printf accept; fi".into(),"--bind=double-click:transform:if [ -n {1} ] && [ {1} != '@section' ]; then printf accept; fi".into(),format!("--bind=every(1):bg-transform:{reload}"),format!("--bind=a:execute-silent:{reminder} menu {{1}}"),format!("--bind=r:execute-silent:{reminder} list"),"--bind=a:+clear-screen,r:+clear-screen".into()];
     args.push(format!(
-        "--bind=resize:transform:if [ -f {history} ]; then touch {history}.resized; else printf refresh-preview; fi"
+        "--bind=resize:transform:if [ -f {history} ]; then touch {history}.resized; fi; printf refresh-preview"
     ));
     let scroll = shell(&[&exe, "--scroll", &cache.to_string_lossy()]);
     for (keys, step) in [
@@ -430,10 +438,10 @@ pub fn main() -> Result<()> {
         args.push(format!("--bind={keys}:transform:{scroll} {step} {{1}}"));
     }
     args.push(format!(
-        "--bind=end:transform:rm -f {history}; if [ -f {history}.expanded ]; then rm -f {history}.expanded {history}.resized; printf '%s' 'change-preview-window(default:right:60%:nowrap:follow:+0)+refresh-preview'; elif [ -f {history}.resized ]; then rm -f {history}.resized; printf 'refresh-preview+preview-bottom'; else printf preview-bottom; fi"
+        "--bind=end:transform:rm -f {history}; if [ -f {history}.expanded ]; then rm -f {history}.expanded {history}.resized; printf '%s' 'change-preview-window(default:right:60%:nowrap:follow:+0)+refresh-preview'; elif [ -f {history}.resized ]; then rm -f {history}.resized; printf '%s' 'change-preview-window(default:right:60%:nowrap:follow:+0)+refresh-preview+preview-bottom'; else printf preview-bottom; fi"
     ));
     args.push(format!(
-        "--bind=focus:transform:if [ -f {history}.expanded ]; then rm -f {history} {history}.expanded {history}.resized; printf '%s' 'change-preview-window(default:right:60%:nowrap:follow:+0)'; else rm -f {history} {history}.resized; fi"
+        "--bind=focus:transform:if [ -f {history}.expanded ] || [ -f {history}.resized ]; then rm -f {history} {history}.expanded {history}.resized; printf '%s' 'change-preview-window(default:right:60%:nowrap:follow:+0)'; else rm -f {history} {history}.resized; fi"
     ));
     for n in 1..=9 {
         args.push(format!("--bind={n}:transform:if [ \"$FZF_MATCH_COUNT\" -ge {n} ]; then printf '%s' 'pos(1){}+accept'; fi","+down-match".repeat(n)));

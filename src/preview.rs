@@ -469,7 +469,21 @@ fn live_inner(pane: &str, path: &Path, origin: &str) -> Result<()> {
                     if let Ok(rows) = serde_json::from_value::<Vec<String>>(window["rows"].clone())
                     {
                         let mut out = std::io::stdout().lock();
-                        for row in &rows {
+                        // After resize fzf may retain an offset from the old grid. Publish
+                        // the actual held viewport at offset zero instead of reusing it.
+                        let shown = if history.with_extension("history.resized").exists() {
+                            let distance = std::fs::read_to_string(&history)?.parse::<usize>()?;
+                            let height = usize::from(lines);
+                            let start = rows.len().saturating_sub(height).saturating_sub(distance);
+                            atomic_write(
+                                &history.with_extension("extent"),
+                                format!("{} {}", rows.len(), height).as_bytes(),
+                            )?;
+                            &rows[start..(start + height).min(rows.len())]
+                        } else {
+                            &rows[..]
+                        };
+                        for row in shown {
                             writeln!(out, "{row}")?;
                         }
                         out.flush()?;

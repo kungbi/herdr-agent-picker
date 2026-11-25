@@ -509,7 +509,7 @@ fn tall_preview_fills_with_recent_history() {
     screen.pump(&mut picker);
     publish_rows(&fixture, 1, 95, "");
     wait_screen(&fixture, &mut picker, &mut screen, |rows| {
-        rows.last().is_some_and(|row| row == "ROW_95")
+        rows.len() == bottom.len() && rows.last().is_some_and(|row| row == "ROW_95")
     });
     let bottom = screen.preview();
     picker.send(b"U");
@@ -536,18 +536,51 @@ fn tall_preview_fills_with_recent_history() {
     picker.send(b"K");
     screen.pump(&mut picker);
     picker.send(b"K");
+    let before_resize: Vec<_> = (96 - bottom.len()..=95)
+        .map(|row| format!("ROW_{row:02}_EDIT"))
+        .collect();
     wait_screen(&fixture, &mut picker, &mut screen, |rows| {
-        rows.last().is_some_and(|row| row == "ROW_95_EDIT")
+        rows == before_resize
     });
-    let before_resize = screen.preview();
     picker.resize(48, 101);
+    screen.resize(48, 101);
+    let deadline = Instant::now() + WAIT;
+    loop {
+        screen.pump(&mut picker);
+        // The new right border distinguishes a resized frame from the old one.
+        if screen.frame[0][100] == '╮' && screen.preview() == before_resize {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "preview {:?}, Herdr events {:?}",
+            screen.preview(),
+            fixture.events()
+        );
+    }
     assert_stable(&fixture, &mut picker, &mut screen, &before_resize, 2);
-    picker.clear();
     picker.send(b"\x1b[F");
-    picker.wait_for(b"Updated Task");
-    wait_screen(&fixture, &mut picker, &mut screen, |rows| {
-        rows.last().is_some_and(|row| row == "ROW_99_EDIT")
-    });
+    let deadline = Instant::now() + WAIT;
+    loop {
+        screen.pump(&mut picker);
+        if screen
+            .preview()
+            .last()
+            .is_some_and(|row| row == "ROW_99_EDIT")
+            && screen
+                .frame
+                .iter()
+                .any(|row| row.iter().collect::<String>().contains("Updated Task"))
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "preview {:?}, Herdr events {:?}",
+            screen.preview(),
+            fixture.events()
+        );
+    }
     picker.send(b"q");
     assert!(picker.finish().success());
 }
