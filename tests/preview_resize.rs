@@ -870,6 +870,64 @@ fn tall_preview_fills_with_recent_history() {
 }
 
 #[test]
+fn held_during_resize_read_preserves_viewport() {
+    let mut fixture = setup("held-during-resize-read");
+    fixture.env("CONTENT", fixture.path("content"));
+    fixture.env("READ_GATE", fixture.path("read-gate"));
+    fixture.write_json(
+        "snapshot.json",
+        &json!({
+            "focused_pane_id": "p1", "panes": [{"pane_id": "p1"}],
+            "agents": [agent("p1", "Agent", true)], "workspaces": [], "tabs": []
+        }),
+    );
+    publish_rows(&fixture, 1, 95, "");
+    let mut picker = fixture.spawn(&["picker"], 48, 100);
+    let mut screen = Screen::new(48, 100);
+    wait_screen(&fixture, &mut picker, &mut screen, |rows| {
+        rows.last().is_some_and(|row| row == "ROW_95")
+    });
+    let initial_owner = fixture
+        .events()
+        .into_iter()
+        .find_map(|event| event.strip_prefix("read-owner p1 ").map(str::to_owned))
+        .unwrap();
+    fixture.write("read-gate", "");
+    picker.resize(48, 101);
+    screen.resize(48, 101);
+    picker.wait_until(
+        || {
+            fixture
+                .events()
+                .iter()
+                .filter_map(|event| event.strip_prefix("read-blocked p1 "))
+                .any(|owner| owner != initial_owner)
+        },
+        WAIT,
+    );
+    picker.send(b"KK");
+    wait_screen(&fixture, &mut picker, &mut screen, |rows| {
+        rows.last().is_some_and(|row| row == "ROW_91")
+    });
+    let held = screen.preview();
+    publish_rows(&fixture, 1, 99, "_EDIT");
+    std::fs::remove_file(fixture.path("read-gate")).unwrap();
+    assert_stable(&fixture, &mut picker, &mut screen, &held, 2);
+    picker.send(b"K");
+    wait_screen(&fixture, &mut picker, &mut screen, |rows| {
+        rows.last().is_some_and(|row| row == "ROW_89")
+    });
+    picker.send(b"J");
+    wait_screen(&fixture, &mut picker, &mut screen, |rows| rows == held);
+    picker.send(b"\x1b[F");
+    wait_screen(&fixture, &mut picker, &mut screen, |rows| {
+        rows.last().is_some_and(|row| row == "ROW_99_EDIT")
+    });
+    picker.send(b"q");
+    assert!(picker.finish().success());
+}
+
+#[test]
 fn list_reload_preserves_held_preview() {
     use std::os::unix::fs::PermissionsExt;
     let mut fixture = setup("held-reload");

@@ -199,6 +199,7 @@ impl Fixture {
             "FAIL_ATTACH_SPAWN",
             "FAIL_ATTACH",
             "FAIL_READ",
+            "READ_GATE",
             "PICKER_AGENT_COUNT",
             "PICKER_AGENT_KIND",
             "PICKER_UNREAD_ALARM",
