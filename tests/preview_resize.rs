@@ -1018,18 +1018,16 @@ fn held_preview_survives_resize_at_top_and_near_bottom() {
     wait_screen(&fixture, &mut picker, &mut screen, |rows| {
         rows.last().is_some_and(|row| row == "ROW_80")
     });
+    let near_bottom: Vec<_> = (36..=79).map(|row| format!("ROW_{row:02}")).collect();
     picker.send(b"\x1b[1;2A");
     wait_screen(&fixture, &mut picker, &mut screen, |rows| {
-        rows.last().is_some_and(|row| row == "ROW_79")
+        rows == near_bottom
     });
-    let near_bottom = screen.preview();
     resize_and_wait(&fixture, &mut picker, &mut screen, 101, &near_bottom);
     assert_stable(&fixture, &mut picker, &mut screen, &near_bottom, 2);
+    let top: Vec<_> = (1..=44).map(|row| format!("ROW_{row:02}")).collect();
     picker.send(b"UUUUUU");
-    wait_screen(&fixture, &mut picker, &mut screen, |rows| {
-        rows.first().is_some_and(|row| row == "ROW_01")
-    });
-    let top = screen.preview();
+    wait_screen(&fixture, &mut picker, &mut screen, |rows| rows == top);
     resize_and_wait(&fixture, &mut picker, &mut screen, 100, &top);
     assert_stable(&fixture, &mut picker, &mut screen, &top, 2);
     picker.send(b"q");
