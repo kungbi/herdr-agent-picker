@@ -431,6 +431,52 @@ impl Loading {
     }
 }
 impl SnapshotStream {
+    fn restore(&mut self, pane: &str, history: &Path, loading: &mut Loading) -> Result<()> {
+        if !history.exists() {
+            return Ok(());
+        }
+        if let Ok(data) = std::fs::read(history.with_extension("window")) {
+            if let Ok(window) = serde_json::from_slice::<serde_json::Value>(&data) {
+                if window["pane"].as_str() == Some(pane)
+                    && window["terminal"].as_str() == self.terminal.as_deref()
+                    && (window["semantic"].is_null()
+                        || crate::hermes_history::valid(pane, &window["semantic"]))
+                {
+                    if let Ok(rows) = serde_json::from_value::<Vec<String>>(window["rows"].clone())
+                    {
+                        let was_loading = loading.finish();
+                        let mut out = std::io::stdout().lock();
+                        if was_loading {
+                            out.write_all(b"\x1b[2J")?;
+                        }
+                        let distance = std::fs::read_to_string(history)?.parse::<usize>()?;
+                        let start = rows
+                            .len()
+                            .saturating_sub(self.height)
+                            .saturating_sub(distance);
+                        atomic_write(&history.with_extension("history.resized"), b"")?;
+                        atomic_write(
+                            &history.with_extension("extent"),
+                            format!("{} {}", rows.len(), self.height).as_bytes(),
+                        )?;
+                        let shown = &rows[start..(start + self.height).min(rows.len())];
+                        for row in shown {
+                            writeln!(out, "{row}")?;
+                        }
+                        if was_loading && shown.is_empty() {
+                            writeln!(out)?;
+                        }
+                        out.flush()?;
+                        self.emitted = rows.len();
+                        self.previous = rows.clone();
+                        self.buffer = rows;
+                        self.restored = true;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
     fn write(&mut self, text: &str, out: &mut impl Write) -> Result<()> {
         let next = visual_rows(text, self.width.max(1));
         if next == self.previous && self.emitted != 0 {
@@ -525,6 +571,10 @@ impl SnapshotStream {
             Ok(text) => {
                 // Serialize publication with the first scroll key, never with the slow pane read.
                 let _guard = lock(&history.with_extension("viewport-lock"), false)?;
+                // A scroll may have held the previous window while this first read was in flight.
+                if self.emitted == 0 && history.exists() {
+                    self.restore(pane, history, loading)?;
+                }
                 if self.emitted == 0 || !history.exists() {
                     if self.restored && !history.exists() {
                         std::io::stdout().write_all(b"\x1b[2J")?;
@@ -751,47 +801,7 @@ fn live_inner(pane: &str, path: &Path, origin: &str, loading: &mut Loading) -> R
     }
     let history = path.with_extension("history");
     let viewport_guard = crate::util::lock(&history.with_extension("viewport-lock"), false)?;
-    if history.exists() {
-        if let Ok(data) = std::fs::read(history.with_extension("window")) {
-            if let Ok(window) = serde_json::from_slice::<serde_json::Value>(&data) {
-                if window["pane"].as_str() == Some(pane)
-                    && window["terminal"].as_str() == stream.terminal.as_deref()
-                    && (window["semantic"].is_null()
-                        || crate::hermes_history::valid(pane, &window["semantic"]))
-                {
-                    if let Ok(rows) = serde_json::from_value::<Vec<String>>(window["rows"].clone())
-                    {
-                        let was_loading = loading.finish();
-                        let mut out = std::io::stdout().lock();
-                        if was_loading {
-                            out.write_all(b"\x1b[2J")?;
-                        }
-                        // A restarted preview can lose its offset, even on the same pane.
-                        let distance = std::fs::read_to_string(&history)?.parse::<usize>()?;
-                        let height = usize::from(lines);
-                        let start = rows.len().saturating_sub(height).saturating_sub(distance);
-                        atomic_write(&history.with_extension("history.resized"), b"")?;
-                        atomic_write(
-                            &history.with_extension("extent"),
-                            format!("{} {}", rows.len(), height).as_bytes(),
-                        )?;
-                        let shown = &rows[start..(start + height).min(rows.len())];
-                        for row in shown {
-                            writeln!(out, "{row}")?;
-                        }
-                        if was_loading && shown.is_empty() {
-                            writeln!(out)?;
-                        }
-                        out.flush()?;
-                        stream.emitted = rows.len();
-                        stream.previous = rows.clone();
-                        stream.buffer = rows;
-                        stream.restored = true;
-                    }
-                }
-            }
-        }
-    }
+    stream.restore(pane, &history, loading)?;
     drop(viewport_guard);
     let mut input = crate::interaction::Input::new(path)?;
     // Unknown origin is deliberately read-only too: guessing could resize the

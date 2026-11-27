@@ -255,6 +255,17 @@ fn main() {
                 "read"
             };
             log("EVENTS", &format!("{event} {}", args[2]));
+            if let Some(gate) = env::var_os("READ_GATE") {
+                let gate = Path::new(&gate);
+                let owner = unsafe { libc::getppid() };
+                log("EVENTS", &format!("read-owner {} {owner}", args[2]));
+                if gate.exists() {
+                    log("EVENTS", &format!("read-blocked {} {owner}", args[2]));
+                    while gate.exists() {
+                        std::thread::sleep(std::time::Duration::from_millis(5));
+                    }
+                }
+            }
             if flag("FAIL_READ") || d["read_error"] == true {
                 std::process::exit(1);
             }
