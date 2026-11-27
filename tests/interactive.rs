@@ -17,6 +17,14 @@ fn calls(f: &Fixture, pair: [&str; 2]) -> usize {
         .filter(|c| c.starts_with(&pair.map(str::to_owned)))
         .count()
 }
+fn loading_visible(screen: &Screen) -> bool {
+    screen.frame.iter().any(|row| {
+        row[65..]
+            .iter()
+            .collect::<String>()
+            .contains("Loading preview…")
+    })
+}
 fn scenario(case: &str) {
     let mut f = Fixture::new(case);
     f.write("received", "");
@@ -42,6 +50,44 @@ fn scenario(case: &str) {
     }
     f.write_json("data.json", &data);
     let mut p = f.spawn(&[], 24, 160);
+    if case == "scrolled_entry" {
+        let mut screen = Screen::new(24, 160);
+        let mut offset = 0;
+        let deadline = std::time::Instant::now() + WAIT;
+        while !loading_visible(&screen) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "no preview loading hint"
+            );
+            p.drain(Duration::from_millis(20));
+            screen.feed(&p.output[offset..]);
+            offset = p.output.len();
+        }
+        // At 160×24 the right-hand preview spans roughly columns 65–157.
+        let (y, x) = screen
+            .frame
+            .iter()
+            .enumerate()
+            .find_map(|(y, row)| {
+                row[65..]
+                    .iter()
+                    .collect::<String>()
+                    .find("Loading preview…")
+                    .map(|x| (y, x + 65))
+            })
+            .unwrap();
+        assert!(
+            (9..=14).contains(&y) && (96..=108).contains(&x),
+            "hint not centered: {x},{y}"
+        );
+        assert!(
+            screen
+                .frame
+                .iter()
+                .any(|row| row[..65].iter().collect::<String>().contains("Task 1")),
+            "loading hid the agent list"
+        );
+    }
     p.wait_for(if case == "empty_list" {
         b"No running agents"
     } else if case == "busy_attach" {
@@ -145,6 +191,7 @@ fn exercise(case: &str, f: &Fixture, p: &mut Pty, data: &mut Value) {
             );
             screen.pump(p);
         }
+        assert!(!loading_visible(&screen), "hint remained after first frame");
         assert!(!visible(&screen, "PREVIOUS_ROW_10"));
         let mut trace = Vec::new();
         for byte in b"\x1b[1;2A" {

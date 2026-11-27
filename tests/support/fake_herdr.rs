@@ -230,13 +230,24 @@ fn main() {
                 args.len() == 5
                     && args[3] == "--format"
                     && ["ansi", "text"].contains(&args[4].as_str())
-                    || args.len() == 9
+                    || (args.len() == 9 || args.len() == 10 && args[9] == "--app-history")
                         && args[6].parse::<u16>().is_ok_and(|n| n > 0)
                         && args[3..6] == ["--source", "recent-unwrapped", "--lines"]
                         && args[7] == "--format"
                         && ["ansi", "text"].contains(&args[8].as_str())
             );
-            let event = if args.last().is_some_and(|s| s == "text") {
+            let app_history = args.last().is_some_and(|s| s == "--app-history");
+            if app_history {
+                log("EVENTS", &format!("app-history {}", args[2]));
+                if flag("REJECT_APP_HISTORY") {
+                    std::process::exit(1);
+                }
+            }
+            let event = if args
+                .get(8)
+                .or_else(|| args.get(4))
+                .is_some_and(|s| s == "text")
+            {
                 "history-read"
             } else if args.get(6).is_some_and(|s| s == "2048") {
                 "styled-history-read"
@@ -252,7 +263,7 @@ fn main() {
                 let attached = Path::new(&root)
                     .join(format!("{}.attached", args[2]))
                     .exists();
-                let format = args.last().unwrap();
+                let format = &args[8];
                 log(
                     "EVENTS",
                     &format!(
@@ -261,7 +272,14 @@ fn main() {
                         if attached { "attached" } else { "before" }
                     ),
                 );
-                let text = fs::read_to_string(Path::new(&root).join(&args[2])).unwrap();
+                let attached_content =
+                    Path::new(&root).join(format!("{}.attached-content", args[2]));
+                let source = if attached && attached_content.exists() {
+                    attached_content
+                } else {
+                    Path::new(&root).join(&args[2])
+                };
+                let text = fs::read_to_string(source).unwrap();
                 let limit = args
                     .get(6)
                     .map(|n| n.parse::<usize>().unwrap())
@@ -282,7 +300,21 @@ fn main() {
                     serde_json::from_slice(&fs::read(file("SNAPSHOTS")).unwrap()).unwrap();
                 print!("{}", map[&args[2]].as_str().unwrap());
             } else if flag("CONTENT") {
-                let content = if args.last().is_some_and(|s| s == "text") && flag("TEXT_CONTENT") {
+                let retry_ready = !flag("APP_HISTORY_SHORT_FIRST")
+                    || fs::read_to_string(file("EVENTS"))
+                        .unwrap_or_default()
+                        .lines()
+                        .filter(|line| *line == format!("app-history {}", args[2]))
+                        .count()
+                        > 1;
+                let content = if app_history && flag("APP_HISTORY_CONTENT") && retry_ready {
+                    "APP_HISTORY_CONTENT"
+                } else if args
+                    .get(8)
+                    .or_else(|| args.get(4))
+                    .is_some_and(|s| s == "text")
+                    && flag("TEXT_CONTENT")
+                {
                     "TEXT_CONTENT"
                 } else {
                     "CONTENT"

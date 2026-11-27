@@ -316,6 +316,100 @@ fn history_anchor(
     }
     best.map(|(index, start, _)| (index, start))
 }
+// Reflow may change line breaks, but the seam must be unique and start on a source line.
+fn reflow_anchor(
+    source: &str,
+    rows: &[String],
+    top: usize,
+    height: usize,
+    width: usize,
+) -> Option<(usize, usize)> {
+    let mut text = String::new();
+    let mut line_starts = Vec::new();
+    let mut visual = 0;
+    let plain_source = crate::preview::public_text(source);
+    for line in plain_source.lines() {
+        let normalized = line.split_whitespace().collect::<Vec<_>>().join(" ");
+        if !normalized.is_empty() {
+            if !text.is_empty() {
+                text.push(' ');
+            }
+            line_starts.push((text.len(), visual));
+            text.push_str(&normalized);
+        }
+        visual += if line.is_empty() {
+            1
+        } else {
+            crate::preview::visual_rows(line, width.max(1)).len()
+        };
+    }
+    let mut best: Option<(usize, usize, usize)> = None;
+    let mut tied = false;
+    let normalized_rows: Vec<String> = rows
+        .iter()
+        .map(|row| {
+            crate::preview::public_text(row)
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .collect();
+    for start in top..top.saturating_add(height).min(rows.len()) {
+        let mut probe = String::new();
+        for (offset, normalized) in normalized_rows
+            [start..top.saturating_add(height).min(rows.len())]
+            .iter()
+            .enumerate()
+        {
+            if normalized.is_empty() {
+                break;
+            }
+            if !probe.is_empty() {
+                probe.push(' ');
+            }
+            probe.push_str(normalized);
+            if offset == 0 {
+                continue;
+            }
+            let boundary = |pos: usize| {
+                (pos == 0 || text.as_bytes()[pos - 1] == b' ')
+                    && (pos + probe.len() == text.len()
+                        || text.as_bytes()[pos + probe.len()] == b' ')
+            };
+            let mut positions = Vec::new();
+            let mut search_at = 0;
+            while let Some(found) = text[search_at..].find(&probe) {
+                let position = search_at + found;
+                if boundary(position) {
+                    positions.push(position);
+                    if positions.len() == 2 {
+                        break;
+                    }
+                }
+                search_at = position + probe.chars().next().unwrap().len_utf8();
+            }
+            let [position] = positions.as_slice() else {
+                if positions.is_empty() {
+                    break;
+                }
+                continue;
+            };
+            let Some((_, prefix)) = line_starts.iter().find(|(pos, _)| pos == position) else {
+                continue;
+            };
+            let length = offset + 1;
+            if best.is_none_or(|(_, _, n)| length > n) {
+                best = Some((*prefix, start, length));
+                tied = false;
+            } else if best.is_some_and(|(p, s, n)| length == n && (p, s) != (*prefix, start)) {
+                tied = true;
+            }
+        }
+    }
+    (!tied)
+        .then_some(best?)
+        .map(|(prefix, start, _)| (prefix, start))
+}
 fn cached_source<'a>(sources: &'a [Value], pane: &str, terminal: &str) -> Option<&'a str> {
     sources
         .iter()
@@ -388,7 +482,7 @@ pub fn scroll(path: &Path, step: i32, pane: &str) -> Result<()> {
             let width = window["width"].as_u64().ok_or("Invalid preview width")? as usize;
             let limit = window["limit"].as_u64().ok_or("Invalid preview limit")? as u16;
             // shortcut: reads stop at 65,535 lines, widen the limit type for deeper history.
-            let next_limit = limit.saturating_mul(2);
+            let next_limit = limit.saturating_mul(2).max(2048);
             let top = max - old;
             if let Some(terminal) = window["terminal"].as_str() {
                 let current = request(&["pane", "get", pane])?;
@@ -407,21 +501,22 @@ pub fn scroll(path: &Path, step: i32, pane: &str) -> Result<()> {
             let cached_anchor = cached_rows
                 .as_ref()
                 .and_then(|candidates| history_anchor(candidates, &rows, top, height))
+                .or_else(|| {
+                    cached
+                        .as_deref()
+                        .and_then(|text| reflow_anchor(text, &rows, top, height, width))
+                })
                 .filter(|anchor| history_progress(Some(*anchor)));
             let (candidates, anchor, short) = if let Some(anchor) = cached_anchor {
                 (cached_rows.unwrap(), Some(anchor), false)
             } else {
-                let text = crate::preview::read_snapshot_lines(pane, next_limit, "text")
-                    .unwrap_or_default();
-                let styled = crate::preview::read_snapshot_lines(pane, next_limit, "ansi")
-                    .map(|ansi| crate::preview::styled_history(&text, &ansi))
-                    .unwrap_or_else(|_| text.clone());
+                let styled = crate::preview::read_history(pane, next_limit).unwrap_or_default();
                 let candidates = crate::preview::visual_rows(&styled, width.max(1));
                 let anchor = history_anchor(&candidates, &rows, top, height);
                 (
                     candidates,
                     anchor,
-                    text.lines().count() < usize::from(next_limit),
+                    styled.lines().count() < usize::from(next_limit),
                 )
             };
             let mut from_transcript = false;
@@ -507,7 +602,9 @@ pub fn scroll(path: &Path, step: i32, pane: &str) -> Result<()> {
         println!("preview-bottom");
     } else {
         atomic_write(&history, next.to_string().as_bytes())?;
-        if path.with_extension("history.expanded").exists() {
+        if path.with_extension("history.expanded").exists()
+            || path.with_extension("history.resized").exists()
+        {
             let window: Value = serde_json::from_slice(&fs::read(path.with_extension("window"))?)?;
             if window["pane"].as_str() == Some(pane)
                 && (window["semantic"].is_null()
@@ -524,10 +621,7 @@ pub fn scroll(path: &Path, step: i32, pane: &str) -> Result<()> {
             }
             return Ok(());
         }
-        if path.with_extension("history.resized").exists() {
-            println!("refresh-preview");
-            return Ok(());
-        }
+
         let action = if next > old {
             "preview-up"
         } else {
@@ -742,6 +836,53 @@ mod tests {
         assert_eq!(rows[0], "CX001");
         assert_eq!(rows[92], "CX093");
         assert_eq!(rows[93], "\x1b[32mCX094\x1b[0m");
+    }
+    #[test]
+    fn attached_word_wrapped_history_finds_exact_multirow_seam() {
+        let source: String = (1..=120).map(|n| format!("    • HX{n:03} item: Verify that the timer still advances after opening the view for this entry.\n")).collect();
+        let native: Vec<String> = (105..=120).flat_map(|n| [
+            format!("    • \x1b[1mHX{n:03}\x1b[0m item: Verify that the timer still advances after"),
+            "      opening the view for this entry.".to_string(),
+        ]).collect();
+        let candidates = crate::preview::visual_rows(&source, 68);
+        let (prefix, start) =
+            reflow_anchor(&source, &native, 0, 32, 68).expect("exact reflow seam");
+        assert_eq!(start, 0);
+        assert!(candidates[prefix].contains("HX105"));
+        let mut merged = candidates[..prefix].to_vec();
+        merged.extend_from_slice(&native[start..]);
+        assert!(merged.ends_with(&native));
+        assert!(merged[..prefix].iter().any(|r| r.contains("HX104")));
+        assert_eq!(
+            reflow_anchor(&(source.clone() + &source), &native, 0, 32, 68),
+            None
+        );
+        let mismatch = vec![
+            "    • HX105 item: Verify that the timer still advances after".to_string(),
+            "      opening the view for a different entry.".to_string(),
+        ];
+        assert_eq!(reflow_anchor(&source, &mismatch, 0, 2, 68), None);
+        assert_eq!(reflow_anchor(&source, &native[..1], 0, 1, 68), None);
+        let repeated_suffix = vec![
+            "    opening the view for this entry.".to_owned(),
+            "    opening the view for this entry.".to_owned(),
+        ];
+        assert_eq!(reflow_anchor(&source, &repeated_suffix, 0, 2, 68), None);
+        assert_eq!(
+            reflow_anchor("A A A", &["A".into(), "A".into()], 0, 2, 68),
+            None
+        );
+        let mut continuation_first = vec!["    opening the view for this entry.".to_owned()];
+        continuation_first.extend(native[4..].iter().cloned());
+        let (next_prefix, next_start) =
+            reflow_anchor(&source, &continuation_first, 0, 29, 68).unwrap();
+        assert_eq!(next_start, 1);
+        assert!(candidates[next_prefix].contains("HX107"));
+        let source_with_blanks = format!("prior\n\n{source}");
+        let candidates_with_blanks = crate::preview::visual_rows(&source_with_blanks, 68);
+        let (prefix_with_blanks, _) =
+            reflow_anchor(&source_with_blanks, &native, 0, 32, 68).unwrap();
+        assert!(candidates_with_blanks[prefix_with_blanks].contains("HX105"));
     }
     #[test]
     fn history_anchor_accepts_full_replays_but_rejects_ambiguous_fragments() {
