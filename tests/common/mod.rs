@@ -189,6 +189,8 @@ impl Fixture {
             "RELEASED",
             "CONTENT",
             "TEXT_CONTENT",
+            "APP_HISTORY_CONTENT",
+            "REJECT_APP_HISTORY",
             "CROSS_TAB_CONTENT",
             "SNAPSHOTS",
             "SNAPSHOT",

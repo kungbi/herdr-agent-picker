@@ -149,6 +149,12 @@ fn snapshot_limit() -> u16 {
         .max(30)
 }
 pub fn read_snapshot_lines(pane: &str, lines: u16, format: &str) -> Result<String> {
+    read_lines(pane, lines, format, Duration::from_secs(3))
+}
+pub fn read_history_text(pane: &str, lines: u16) -> Result<String> {
+    read_lines(pane, lines, "text", Duration::from_secs(21))
+}
+fn read_lines(pane: &str, lines: u16, format: &str, timeout: Duration) -> Result<String> {
     command_output(
         Command::new(herdr()).args([
             "pane",
@@ -161,9 +167,56 @@ pub fn read_snapshot_lines(pane: &str, lines: u16, format: &str) -> Result<Strin
             "--format",
             format,
         ]),
-        Duration::from_secs(3),
+        timeout,
     )
     .map(|text| clean(&text))
+}
+fn read_styled_history(pane: &str, lines: u16) -> Result<String> {
+    command_output(
+        Command::new(herdr()).args([
+            "pane",
+            "read",
+            pane,
+            "--source",
+            "recent-unwrapped",
+            "--lines",
+            &lines.to_string(),
+            "--format",
+            "ansi",
+            "--app-history",
+        ]),
+        Duration::from_secs(21),
+    )
+    .map(|text| clean(&text))
+}
+pub fn read_history(pane: &str, lines: u16) -> Result<String> {
+    let styled = read_styled_history(pane, lines);
+    let visible = read_snapshot_lines(pane, lines, "ansi");
+    if let (Ok(styled), Ok(visible)) = (&styled, &visible) {
+        // shortcut: deeper ANSI is assumed complete; use backend coverage metadata when available.
+        if styled.lines().count() > visible.lines().count() {
+            return Ok(styled.clone());
+        }
+    }
+    match read_history_text(pane, lines) {
+        Ok(text) => {
+            if styled
+                .as_ref()
+                .is_ok_and(|first| first.lines().count() < text.lines().count())
+            {
+                if let Ok(retry) = read_styled_history(pane, lines) {
+                    if retry.lines().count() >= text.lines().count() {
+                        return Ok(retry);
+                    }
+                }
+            }
+            Ok(styled
+                .or(visible)
+                .map(|ansi| styled_history(&text, &ansi))
+                .unwrap_or(text))
+        }
+        Err(error) => styled.or(visible).map_err(|_| error),
+    }
 }
 pub fn styled_history(text: &str, ansi: &str) -> String {
     let ansi = clean(ansi);
@@ -323,10 +376,64 @@ struct SnapshotStream {
     emitted: usize,
     terminal: Option<String>,
 }
+struct Loading {
+    cancel: Option<std::sync::mpsc::Sender<()>>,
+    thread: Option<std::thread::JoinHandle<bool>>,
+}
+impl Loading {
+    fn start() -> Self {
+        let (cancel, wait) = std::sync::mpsc::channel();
+        let thread = std::thread::spawn(move || {
+            if wait.recv_timeout(Duration::from_millis(200)).is_err() && !stopped() {
+                let mut out = std::io::stdout().lock();
+                if !stopped() {
+                    let size = |key| {
+                        env::var(key)
+                            .ok()
+                            .and_then(|s| s.parse::<u16>().ok())
+                            .unwrap_or(1)
+                            .max(1) as usize
+                    };
+                    let (columns, lines) = (size("FZF_PREVIEW_COLUMNS"), size("FZF_PREVIEW_LINES"));
+                    let mut width = 0;
+                    let text: String = "Loading preview…"
+                        .chars()
+                        .take_while(|&c| {
+                            width += c.width().unwrap_or(0);
+                            width <= columns
+                        })
+                        .collect();
+                    let width = text.chars().map(|c| c.width().unwrap_or(0)).sum::<usize>();
+                    let _ = writeln!(
+                        out,
+                        "\x1b[2J{}{}{text}",
+                        "\n".repeat((lines - 1) / 2),
+                        " ".repeat((columns - width) / 2)
+                    );
+                    let _ = out.flush();
+                    return true;
+                }
+            }
+            false
+        });
+        Self {
+            cancel: Some(cancel),
+            thread: Some(thread),
+        }
+    }
+    fn finish(&mut self) -> bool {
+        if let Some(cancel) = self.cancel.take() {
+            let _ = cancel.send(());
+        }
+        self.thread
+            .take()
+            .is_some_and(|thread| thread.join().unwrap_or(false))
+    }
+}
 impl SnapshotStream {
     fn write(&mut self, text: &str, out: &mut impl Write) -> Result<()> {
         let next = visual_rows(text, self.width.max(1));
-        if next == self.previous {
+        if next == self.previous && self.emitted != 0 {
             return Ok(());
         }
         // fzf 0.73's CSI 2 J resets both the offset and paused follow state.
@@ -358,7 +465,7 @@ impl SnapshotStream {
         self.previous = next;
         Ok(())
     }
-    fn paint_queued(&mut self, pane: &str, history: &Path) -> Result<()> {
+    fn paint_queued(&mut self, pane: &str, history: &Path, loading: &mut Loading) -> Result<()> {
         let path = history.with_extension("history.frame");
         if !path.exists() {
             return Ok(());
@@ -373,11 +480,13 @@ impl SnapshotStream {
         let (owner, terminal, binding, body): (String, Option<String>, serde_json::Value, String) =
             serde_json::from_slice(&data)?;
         if history.exists()
-            && history.with_extension("history.expanded").exists()
+            && (history.with_extension("history.expanded").exists()
+                || history.with_extension("history.resized").exists())
             && owner == pane
             && terminal == self.terminal
             && (binding.is_null() || crate::hermes_history::valid(pane, &binding))
         {
+            loading.finish();
             std::io::stdout()
                 .lock()
                 .write_all(format!("\x1b[2J{body}\n").as_bytes())?;
@@ -386,7 +495,7 @@ impl SnapshotStream {
         }
         Ok(())
     }
-    fn refresh(&mut self, pane: &str, history: &Path) -> Result<bool> {
+    fn refresh(&mut self, pane: &str, history: &Path, loading: &mut Loading) -> Result<bool> {
         if let Ok(data) = std::fs::read(history.with_extension("window")) {
             if let Ok(window) = serde_json::from_slice::<serde_json::Value>(&data) {
                 if window["pane"].as_str() == Some(pane)
@@ -426,6 +535,7 @@ impl SnapshotStream {
                     }
                     let before = self.emitted;
                     let previous = self.previous.clone();
+                    loading.finish();
                     self.write(&text, &mut std::io::stdout().lock())?;
                     if self.emitted != before || self.previous != previous {
                         atomic_write(
@@ -445,6 +555,7 @@ impl SnapshotStream {
                 Ok(true)
             }
             Err(_) => {
+                loading.finish();
                 self.write("Preview unavailable", &mut std::io::stdout().lock())?;
                 Ok(false)
             }
@@ -611,7 +722,7 @@ fn attach(terminal: &str, lock: &File, columns: u16, lines: u16) -> Result<Attac
         master,
     })
 }
-fn live_inner(pane: &str, path: &Path, origin: &str) -> Result<()> {
+fn live_inner(pane: &str, path: &Path, origin: &str, loading: &mut Loading) -> Result<()> {
     let size = |key: &str| -> Result<u16> {
         let n = env::var(key)?.parse::<u16>()?;
         if n == 0 {
@@ -650,7 +761,11 @@ fn live_inner(pane: &str, path: &Path, origin: &str) -> Result<()> {
                 {
                     if let Ok(rows) = serde_json::from_value::<Vec<String>>(window["rows"].clone())
                     {
+                        let was_loading = loading.finish();
                         let mut out = std::io::stdout().lock();
+                        if was_loading {
+                            out.write_all(b"\x1b[2J")?;
+                        }
                         // A restarted preview can lose its offset, even on the same pane.
                         let distance = std::fs::read_to_string(&history)?.parse::<usize>()?;
                         let height = usize::from(lines);
@@ -663,6 +778,9 @@ fn live_inner(pane: &str, path: &Path, origin: &str) -> Result<()> {
                         let shown = &rows[start..(start + height).min(rows.len())];
                         for row in shown {
                             writeln!(out, "{row}")?;
+                        }
+                        if was_loading && shown.is_empty() {
+                            writeln!(out)?;
                         }
                         out.flush()?;
                         stream.emitted = rows.len();
@@ -680,12 +798,12 @@ fn live_inner(pane: &str, path: &Path, origin: &str) -> Result<()> {
     // visible pane. Keep the lock so a previous attachment is reaped first.
     if origin.is_empty() || pane == origin {
         while !stopped() {
-            if !stream.refresh(pane, &history)? {
+            if !stream.refresh(pane, &history, loading)? {
                 return Ok(());
             }
             let end = Instant::now() + Duration::from_secs(1);
             while Instant::now() < end && !stopped() {
-                stream.paint_queued(pane, &history)?;
+                stream.paint_queued(pane, &history, loading)?;
                 input.update(pane, None, None)?;
                 std::thread::sleep(Duration::from_millis(25));
             }
@@ -710,7 +828,7 @@ fn live_inner(pane: &str, path: &Path, origin: &str) -> Result<()> {
     }) {
         let binding = crate::hermes_history::binding(pane);
         let mut limit = 2048u16;
-        if let Some(mut text) = read_snapshot_lines(pane, limit, "text")
+        if let Some(mut text) = read_history(pane, limit)
             .ok()
             .filter(|text| !text.is_empty())
         {
@@ -720,10 +838,14 @@ fn live_inner(pane: &str, path: &Path, origin: &str) -> Result<()> {
                 && limit < u16::MAX
             {
                 limit = limit.saturating_mul(2);
-                let Ok(wider) = read_snapshot_lines(pane, limit, "text") else {
+                let Ok(wider) = read_history(pane, limit) else {
                     break;
                 };
-                if !wider.ends_with(&text) || wider.len() == text.len() {
+                let wider_plain = public_text(&wider);
+                let current_plain = public_text(&text);
+                if !wider_plain.ends_with(&current_plain)
+                    || wider_plain.len() == current_plain.len()
+                {
                     break;
                 }
                 text = wider;
@@ -737,12 +859,7 @@ fn live_inner(pane: &str, path: &Path, origin: &str) -> Result<()> {
                     .find('\n')
                     .map_or(text.len() - start, |n| n + 1);
             }
-            let text = &text[start..];
-            let styled = read_snapshot_lines(pane, limit, "ansi")
-                .map(|ansi| styled_history(text, &ansi))
-                .ok()
-                .filter(|styled| styled.len() <= 256 * 1024)
-                .unwrap_or_else(|| text.to_owned());
+            let styled = &text[start..];
             sources.retain(|source| source["pane"].as_str() != Some(pane));
             if binding
                 .as_ref()
@@ -784,10 +901,10 @@ fn live_inner(pane: &str, path: &Path, origin: &str) -> Result<()> {
         if attached.child.try_wait()?.is_some() {
             return Err("Terminal attachment ended".into());
         }
-        stream.paint_queued(pane, &history)?;
+        stream.paint_queued(pane, &history, loading)?;
         input.update(pane, Some(&terminal), Some(&mut attached.master))?;
         if Instant::now() >= refresh {
-            if !stream.refresh(pane, &history)? {
+            if !stream.refresh(pane, &history, loading)? {
                 return Err("Preview read failed; input stopped".into());
             }
             refresh = Instant::now()
@@ -816,7 +933,13 @@ pub fn live(pane: &str, path: &Path, origin: &str) {
         return;
     }
     signals();
-    if let Err(error) = live_inner(pane, path, origin) {
+    let mut loading = Loading::start();
+    let result = live_inner(pane, path, origin, &mut loading);
+    if loading.finish() && !stopped() {
+        println!("\x1b[2J");
+        let _ = std::io::stdout().flush();
+    }
+    if let Err(error) = result {
         if stopped() {
             return;
         }
@@ -927,6 +1050,17 @@ mod tests {
         out.clear();
         stream.write("", &mut out).unwrap();
         assert_eq!(out, b"\x1b[2J\n");
+    }
+    #[test]
+    fn empty_first_snapshot_replaces_loading_without_entering_history() {
+        let mut stream = SnapshotStream::default();
+        let mut out = Vec::new();
+        stream.write("", &mut out).unwrap();
+        assert_eq!(out, b"\x1b[2J\n");
+        assert!(stream.buffer.is_empty());
+        out.clear();
+        stream.write("", &mut out).unwrap();
+        assert!(out.is_empty());
     }
     #[test]
     fn cropped_hermes_grid_matches_history_before_wrapping() {

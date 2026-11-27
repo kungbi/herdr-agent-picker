@@ -505,6 +505,144 @@ fn codex_traverses_text_history_beyond_ansi_viewport() {
 }
 
 #[test]
+fn deep_history_opt_in_preserves_coverage_and_falls_back() {
+    for mode in ["supported", "retry", "ignored", "rejected"] {
+        let mut fixture = setup(mode);
+        fixture.env("CONTENT", fixture.path("ansi"));
+        fixture.env("TEXT_CONTENT", fixture.path("text"));
+        if mode == "supported" || mode == "retry" {
+            fixture.env("APP_HISTORY_CONTENT", fixture.path("styled"));
+            if mode == "retry" {
+                fixture.env("APP_HISTORY_SHORT_FIRST", "1");
+            }
+        } else if mode == "rejected" {
+            fixture.env("REJECT_APP_HISTORY", "1");
+        }
+        let text: String = (1..=120).map(|n| format!("CX{n:03}\n")).collect();
+        let ansi: String = (101..=120)
+            .map(|n| format!("\x1b[32mCX{n:03}\x1b[0m\n"))
+            .collect();
+        let styled: String = (1..=120)
+            .map(|n| format!("\x1b[38;2;255;255;85mCX{n:03}\x1b[0m\n"))
+            .collect();
+        fixture.write(
+            "text",
+            if mode == "supported" {
+                "CX120\n"
+            } else {
+                &text
+            },
+        );
+        fixture.write("ansi", &ansi);
+        fixture.write("styled", &styled);
+        let path = fixture.path("preview.lock");
+        fixture.write("preview.extent", "20 10");
+        fixture.write("preview.history", "10");
+        fixture.write_json(
+            "preview.window",
+            &json!({
+                "pane":"p1", "terminal":null, "semantic":null, "width":80,
+                "limit":60, "rows":(101..=120).map(|n| format!("CX{n:03}")).collect::<Vec<_>>()
+            }),
+        );
+        let mut cmd = fixture.command();
+        cmd.args(["--scroll", path.to_str().unwrap(), "-3", "p1"]);
+        let output = common::output(cmd, WAIT);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let window: Value =
+            serde_json::from_slice(&std::fs::read(fixture.path("preview.window")).unwrap())
+                .unwrap();
+        let rows: Vec<String> = serde_json::from_value(window["rows"].clone()).unwrap();
+        assert_eq!(rows.len(), 120, "{mode}");
+        for (n, row) in rows.iter().enumerate() {
+            assert_eq!(common::plain(row), format!("CX{:03}", n + 1), "{mode}");
+        }
+        if mode == "supported" || mode == "retry" {
+            assert!(rows[0].contains("\x1b[38;2;255;255;85m"));
+        } else {
+            assert!(!rows[0].contains('\x1b'), "{mode} synthesized color");
+        }
+        let calls = fixture.calls();
+        let reads: Vec<_> = calls
+            .iter()
+            .filter(|c| c.starts_with(&["pane".into(), "read".into()]))
+            .collect();
+        assert_eq!(
+            reads.len(),
+            match mode {
+                "supported" => 2,
+                "rejected" => 3,
+                _ => 4,
+            },
+            "{calls:?}"
+        );
+        assert_eq!(reads[0][9], "--app-history");
+        assert_eq!(reads[1][8], "ansi");
+        assert!(reads.iter().all(|c| c[6].parse::<usize>().unwrap() >= 2048));
+        assert!(reads.iter().all(|c| c[2] == "p1"));
+        if mode != "supported" {
+            assert_eq!(reads[2][8], "text");
+        }
+    }
+}
+
+#[test]
+fn preattach_caches_selected_styled_history_only_once() {
+    let mut fixture = setup("pre-attach-styled");
+    fixture.env("CONTENT", fixture.path("ansi"));
+    fixture.env("TEXT_CONTENT", fixture.path("text"));
+    fixture.env("APP_HISTORY_CONTENT", fixture.path("styled"));
+    fixture.env("FZF_PREVIEW_COLUMNS", "80");
+    fixture.env("FZF_PREVIEW_LINES", "10");
+    let norton_pad = " ".repeat(138);
+    let autoexec_pad = " ".repeat(141);
+    fixture.write(
+        "text",
+        &format!("  N O R T O N{norton_pad}│\n  AUTOEXEC{autoexec_pad}│\ntail\n"),
+    );
+    fixture.write("ansi", "tail\n");
+    fixture.write(
+        "styled",
+        &format!("  \x1b[38;2;255;255;85mN O R T O N\x1b[0m{norton_pad}│\n  \x1b[38;2;85;255;255mAUTOEXEC\x1b[0m{autoexec_pad}┃\ntail\n"),
+    );
+    let path = fixture.path("preview.lock");
+    let mut preview = fixture.spawn(
+        &["--live-preview", path.to_str().unwrap(), "p2", "p1"],
+        20,
+        100,
+    );
+    preview.wait_until(|| reads(&fixture, "p2") >= 2, WAIT);
+    let sources: Value =
+        serde_json::from_slice(&std::fs::read(fixture.path("preview.sources")).unwrap()).unwrap();
+    let cached = sources[0]["text"].as_str().unwrap();
+    assert_eq!(sources[0]["pane"], "p2");
+    assert!(common::plain(cached).contains("N O R T O N"));
+    assert!(common::plain(cached).contains("AUTOEXEC"));
+    assert!(cached.contains("\x1b[38;2;255;255;85mN O R T O N"));
+    assert!(cached.contains("\x1b[38;2;85;255;255mAUTOEXEC"));
+    let calls = fixture.calls();
+    let opted: Vec<_> = calls
+        .iter()
+        .filter(|c| c.last().is_some_and(|s| s == "--app-history"))
+        .collect();
+    assert_eq!(opted.len(), 1, "{calls:?}");
+    assert_eq!(opted[0][2], "p2");
+    let events = fixture.events();
+    let history = events.iter().position(|e| e == "app-history p2").unwrap();
+    let attach = events
+        .iter()
+        .position(|e| e.starts_with("attach p2 "))
+        .unwrap();
+    assert!(history < attach, "{events:?}");
+    preview.send(b"\x03");
+    preview.finish();
+}
+
+#[test]
 fn origin_viewport() {
     keeps_preview_viewport("p1");
 }
@@ -907,7 +1045,7 @@ fn lifecycle(scenario: &str) {
             .iter()
             .position(|line| line == "styled-history-read p1")
             .unwrap();
-        assert!(history < styled && styled < attach, "{log:?}");
+        assert!(styled < history && history < attach, "{log:?}");
     }
 
     match scenario {
@@ -1288,7 +1426,7 @@ fn cross_tab_history_survives_attach_and_returns_to_selected_tail() {
         );
     }
     let deadline = Instant::now() + WAIT;
-    while !markers(&screen).contains(&LAST) {
+    while markers(&screen).len() != 14 || !markers(&screen).contains(&LAST) {
         screen.pump(&mut picker);
         assert!(
             Instant::now() < deadline,
@@ -1318,7 +1456,10 @@ fn cross_tab_history_survives_attach_and_returns_to_selected_tail() {
         loop {
             screen.pump(&mut picker);
             let current = markers(&screen);
-            if current.first().is_some_and(|first| *first < previous[0]) {
+            if current.len() == previous.len()
+                && current.windows(2).all(|w| w[1] == w[0] + 1)
+                && current.first().is_some_and(|first| *first < previous[0])
+            {
                 assert!(
                     current.iter().any(|n| previous.contains(n)),
                     "skipped {previous:?} to {current:?}"
@@ -1362,6 +1503,261 @@ fn cross_tab_history_survives_attach_and_returns_to_selected_tail() {
             Instant::now() < deadline,
             "live follow did not show next row: {:?}",
             rows(&screen)
+        );
+    }
+    picker.send(b"\r");
+    assert!(picker.finish().success());
+    assert_eq!(fixture.focus().as_deref(), Some("p2"));
+}
+
+#[test]
+fn repeated_scroll_after_resize_keeps_attached_preview_responsive() {
+    let mut fixture = setup("repeated-resize-scroll");
+    fixture.env("CROSS_TAB_CONTENT", fixture.path("cross-tab"));
+    fixture.write_json(
+        "snapshot.json",
+        &json!({
+            "focused_pane_id":"p1", "panes":[{"pane_id":"p1"},{"pane_id":"p2"}],
+            "agents":[agent("p1", "Agent A", true), agent("p2", "Agent B", false)],
+            "workspaces":[], "tabs":[]
+        }),
+    );
+    fixture.write("cross-tab/p1", "A_ONLY\n");
+    fixture.write(
+        "cross-tab/p2",
+        &(1..=2080).map(|n| format!("B{n:04}\n")).collect::<String>(),
+    );
+    let mut picker = fixture.spawn(&["picker"], 18, 100);
+    let mut screen = Screen::new(18, 100);
+    let markers = |screen: &Screen| -> Vec<usize> {
+        screen
+            .frame
+            .iter()
+            .filter_map(|row| {
+                let text = row[43..97].iter().collect::<String>();
+                text.split_whitespace()
+                    .next()?
+                    .strip_prefix('B')?
+                    .parse()
+                    .ok()
+            })
+            .collect()
+    };
+    let wait = |picker: &mut Pty, screen: &mut Screen, expected: usize| {
+        let start = Instant::now();
+        loop {
+            screen.pump(picker);
+            let rows = markers(screen);
+            if rows.len() == 14 && rows[0] == expected && rows.windows(2).all(|w| w[1] == w[0] + 1)
+            {
+                return start.elapsed();
+            }
+            assert!(
+                start.elapsed() < WAIT,
+                "expected {expected}, got {rows:?}, screen {:?}, events {:?}",
+                screen
+                    .frame
+                    .iter()
+                    .map(|r| r.iter().collect::<String>())
+                    .collect::<Vec<_>>(),
+                fixture.events()
+            );
+        }
+    };
+    let deadline = Instant::now() + WAIT;
+    while !screen
+        .frame
+        .iter()
+        .any(|row| row.iter().collect::<String>().contains("A_ONLY"))
+    {
+        screen.pump(&mut picker);
+        assert!(
+            Instant::now() < deadline,
+            "A missing: {:?}",
+            fixture.events()
+        );
+    }
+    picker.send(b"j");
+    wait(&mut picker, &mut screen, 2067);
+    picker.send(b"K");
+    wait(&mut picker, &mut screen, 2065);
+    picker.resize(18, 101);
+    screen.resize(18, 101);
+    picker.wait_until(|| attachments(&fixture, "p2").len() >= 2, WAIT);
+    wait(&mut picker, &mut screen, 2065);
+    let before = attachments(&fixture, "p2").len();
+    let mut normal = Vec::new();
+    for first in [2063, 2061, 2059] {
+        picker.send(b"K");
+        normal.push(wait(&mut picker, &mut screen, first));
+    }
+    picker.send(&b"K".repeat(10));
+    let elapsed = wait(&mut picker, &mut screen, 2039);
+    let after = attachments(&fixture, "p2").len();
+    eprintln!("normal K input to complete paint {normal:?}, rapid 10 K {elapsed:?}, attachments {before}->{after}");
+    assert!(elapsed < Duration::from_secs(3), "backlog took {elapsed:?}");
+    assert_eq!(after, before, "scroll restarted attachment");
+    picker.send(b"\x1b[F");
+    wait(&mut picker, &mut screen, 2067);
+    picker.send(b"k");
+    let deadline = Instant::now() + WAIT;
+    while !screen
+        .frame
+        .iter()
+        .any(|row| row.iter().collect::<String>().contains("A_ONLY"))
+    {
+        screen.pump(&mut picker);
+        assert!(Instant::now() < deadline, "switch back to A failed");
+    }
+    picker.send(b"j");
+    wait(&mut picker, &mut screen, 2067);
+    picker.send(b"\r");
+    assert!(picker.finish().success());
+    assert_eq!(fixture.focus().as_deref(), Some("p2"));
+}
+
+#[test]
+fn cross_workspace_word_wrapped_history_pages_from_attached_tail() {
+    let mut fixture = Fixture::new("cross-workspace-reflow");
+    fixture.env("FAKE_MODE", "resize");
+    fixture.env("CROSS_TAB_CONTENT", fixture.path("cross-tab"));
+    fixture.write_json("data.json", &json!({
+        "focused_pane_id":"p1", "panes":[{"pane_id":"p1"},{"pane_id":"p2"}],
+        "agents":[
+            {"agent":"hermes","pane_id":"p1","workspace_id":"w1","tab_id":"t1","agent_status":"working","title":"Agent A","focused":true},
+            {"agent":"hermes","pane_id":"p2","workspace_id":"w2","tab_id":"t2","agent_status":"working","title":"Agent B","focused":false}
+        ], "workspaces":[], "tabs":[]
+    }));
+    fixture.write("cross-tab/p1", "A_ONLY\n");
+    let source: String = (1..=120).map(|n| format!("    • HX{n:03} item: Verify that the timer still advances after opening the view for this entry.\n")).collect();
+    fixture.write(
+        "cross-tab/p2",
+        &format!("PRIOR_QUESTION\nPRIOR_ANSWER\n\n{source}"),
+    );
+    let mut native = "    opening the view for this entry.\n".to_owned();
+    native.extend((107..=120).map(|n| format!("    • HX{n:03} item: Verify that the timer still advances after\n    opening the view for this entry.\n")));
+    native.push_str("STATUS_ONE\nSTATUS_TWO\nSTATUS_THREE\nSTATUS_FOUR\n");
+    fixture.write("cross-tab/p2.attached-content", &native);
+    let mut picker = fixture.spawn(&["picker"], 37, 126);
+    let mut screen = Screen::new(37, 126);
+    let marker = regex::Regex::new(r"HX([0-9]{3})").unwrap();
+    let rows = |screen: &Screen| -> Vec<String> {
+        screen
+            .frame
+            .iter()
+            .map(|row| row[52..123].iter().collect())
+            .collect()
+    };
+    let markers = |screen: &Screen| -> Vec<usize> {
+        rows(screen)
+            .iter()
+            .filter_map(|row| marker.captures(row).and_then(|c| c[1].parse().ok()))
+            .collect()
+    };
+    let wait = Duration::from_secs(8);
+    let deadline = Instant::now() + wait;
+    while !rows(&screen).iter().any(|row| row.contains("A_ONLY")) {
+        screen.pump(&mut picker);
+        assert!(
+            Instant::now() < deadline,
+            "A missing: {:?}",
+            screen
+                .frame
+                .iter()
+                .map(|r| r.iter().collect::<String>())
+                .collect::<Vec<_>>()
+        );
+    }
+    picker.send(b"j");
+    let deadline = Instant::now() + wait;
+    while !rows(&screen).iter().any(|row| row.contains("STATUS_FOUR")) {
+        screen.pump(&mut picker);
+        assert!(
+            Instant::now() < deadline,
+            "B tail missing: {:?}",
+            rows(&screen)
+        );
+    }
+    assert!(
+        fixture
+            .events()
+            .iter()
+            .any(|event| event.starts_with("attach p2 69 33 ")),
+        "{:?}",
+        fixture.events()
+    );
+    let mut seen = std::collections::BTreeSet::new();
+    let mut previous = markers(&screen);
+    assert_eq!(previous, (107..=120).collect::<Vec<_>>());
+    seen.extend(previous.iter().copied());
+    let mut prior = false;
+    let mut question = false;
+    for step in 0..40 {
+        picker.send(if step == 0 { b"K" } else { b"U" });
+        let deadline = Instant::now() + wait;
+        loop {
+            screen.pump(&mut picker);
+            let current = markers(&screen);
+            prior |= rows(&screen).iter().any(|row| row.contains("PRIOR_ANSWER"));
+            question |= rows(&screen)
+                .iter()
+                .any(|row| row.contains("PRIOR_QUESTION"));
+            let complete = rows(&screen)[2..35]
+                .iter()
+                .filter(|row| !row.trim().is_empty())
+                .count()
+                >= 32;
+            if complete
+                && ((prior && question) || current.first().is_some_and(|n| *n < previous[0]))
+            {
+                if !(prior && question) {
+                    assert!(
+                        current.iter().any(|n| previous.contains(n)),
+                        "gap {previous:?} -> {current:?}"
+                    );
+                }
+                seen.extend(current.iter().copied());
+                previous = current;
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "stuck at {previous:?}, screen {:?}, events {:?}",
+                rows(&screen),
+                fixture.events()
+            );
+        }
+        if prior && question {
+            break;
+        }
+    }
+    assert!(prior, "prior answer missing");
+    assert!(question, "prior question missing");
+    assert_eq!(seen, (1..=120).collect());
+    picker.send(b"\x1b[F");
+    let deadline = Instant::now() + wait;
+    while !rows(&screen).iter().any(|row| row.contains("STATUS_FOUR")) {
+        screen.pump(&mut picker);
+        assert!(Instant::now() < deadline, "End did not return to B");
+    }
+    picker.send(&b"K".repeat(24));
+    let start = Instant::now();
+    loop {
+        screen.pump(&mut picker);
+        let current = markers(&screen);
+        if current.first().is_some_and(|n| *n <= 95) {
+            eprintln!("24 K reached HX{} after {:?}", current[0], start.elapsed());
+            break;
+        }
+        assert!(start.elapsed() < wait, "K burst did not move: {current:?}");
+    }
+    picker.send(b"\x1b[F");
+    let deadline = Instant::now() + wait;
+    while !rows(&screen).iter().any(|row| row.contains("STATUS_FOUR")) {
+        screen.pump(&mut picker);
+        assert!(
+            Instant::now() < deadline,
+            "End after burst did not return to B"
         );
     }
     picker.send(b"\r");
